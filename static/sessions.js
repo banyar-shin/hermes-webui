@@ -10,6 +10,110 @@ const ICONS={
   more:'<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" stroke="none"><circle cx="8" cy="3" r="1.25"/><circle cx="8" cy="8" r="1.25"/><circle cx="8" cy="13" r="1.25"/></svg>',
 };
 
+// ── Boneyard-style loading skeletons ───────────────────────────────────────
+// Compact bones format: [x%, y, w%, h, radius, isContainer?]
+const SESSION_LOADING_BONES={
+  breakpoints:{
+    0:{
+      name:'session-loading',viewportWidth:640,width:640,height:474,bones:[
+        [0,0,8,16,8],[0,28,76,74,18],[0,116,11,16,8],[0,144,92,92,18],
+        [0,250,9,16,8],[0,278,68,74,18],[0,368,10,16,8],[0,396,87,78,18],
+      ]
+    },
+    900:{
+      name:'session-loading',viewportWidth:920,width:920,height:526,bones:[
+        [0,0,7,16,8],[0,30,88,82,18],[0,128,9,16,8],[0,158,94,108,18],
+        [0,284,8,16,8],[0,314,71,78,18],[0,408,10,16,8],[0,438,90,88,18],
+      ]
+    },
+  }
+};
+
+const WORKSPACE_LOADING_BONES={
+  breakpoints:{
+    0:{
+      name:'workspace-loading',viewportWidth:280,width:280,height:318,bones:[
+        [0,0,58,14,7],[0,28,100,18,10,true],[10,33,28,8,4],[0,60,74,12,7],
+        [0,84,100,18,10,true],[10,89,22,8,4],[16,116,66,10,7],[16,136,54,10,7],
+        [0,164,82,12,7],[0,188,100,18,10,true],[10,193,26,8,4],[16,220,70,10,7],
+        [16,240,52,10,7],[16,260,61,10,7],[0,288,58,12,7],
+      ]
+    }
+  }
+};
+
+let _pendingSessionSelection=null;
+let _sessionLoadRequestSeq=0;
+
+function _resolveBoneyardSkeleton(def,width){
+  if(!def) return null;
+  if(!def.breakpoints) return def;
+  const bps=Object.keys(def.breakpoints).map(Number).sort((a,b)=>a-b);
+  const match=[...bps].reverse().find(bp=>width>=bp) ?? bps[0];
+  return def.breakpoints[match]||null;
+}
+
+function _renderBoneyardSkeleton(target,def,extraClass=''){
+  if(!target) return;
+  const width=Math.max(target.clientWidth||target.offsetWidth||0,1);
+  const layout=_resolveBoneyardSkeleton(def,width);
+  if(!layout) return;
+  const shell=document.createElement('div');
+  shell.className='boneyard-skeleton'+(extraClass?` ${extraClass}`:'');
+  shell.style.height=`${layout.height}px`;
+  shell.style.maxWidth=`${layout.width}px`;
+  for(const rawBone of (layout.bones||[])){
+    const bone=Array.isArray(rawBone)
+      ? {x:rawBone[0],y:rawBone[1],w:rawBone[2],h:rawBone[3],r:rawBone[4],c:rawBone[5]||false}
+      : rawBone;
+    if(bone.c) continue;
+    const el=document.createElement('div');
+    el.className='boneyard-bone';
+    el.style.left=`${bone.x}%`;
+    el.style.top=`${bone.y}px`;
+    el.style.width=`${bone.w}%`;
+    el.style.height=`${bone.h}px`;
+    el.style.borderRadius=typeof bone.r==='number'?`${bone.r}px`:String(bone.r||8);
+    shell.appendChild(el);
+  }
+  target.innerHTML='';
+  target.appendChild(shell);
+}
+
+function showSessionLoadingSkeleton(sessionMeta){
+  const pending={
+    ...(S.session||{}),
+    ...(sessionMeta||{}),
+    session_id:(sessionMeta&&sessionMeta.session_id)||_pendingSessionSelection||((S.session&&S.session.session_id)||''),
+  };
+  S.session=pending;
+  S.messages=[];
+  S.toolCalls=[];
+  S.lastUsage={};
+  S.entries=[];
+  S.currentDir='.';
+  S.busy=false;
+  S.activeStreamId=null;
+  if(typeof clearLiveToolCards==='function') clearLiveToolCards();
+  if(typeof clearPreview==='function') clearPreview();
+  syncTopbar();
+  updateSendBtn();
+  const cancelBtn=$('btnCancel');if(cancelBtn) cancelBtn.style.display='none';
+  setStatus('');
+  setComposerStatus('');
+  const empty=$('emptyState');if(empty) empty.style.display='none';
+  const messages=$('msgInner');
+  if(messages){
+    _renderBoneyardSkeleton(messages, SESSION_LOADING_BONES, 'session-loading-shell');
+    if(messages.parentElement) messages.parentElement.scrollTop=0;
+  }
+  const fileTree=$('fileTree');
+  if(fileTree){
+    fileTree.style.display='';
+    _renderBoneyardSkeleton(fileTree, WORKSPACE_LOADING_BONES, 'workspace-loading-shell');
+  }
+}
+
 async function newSession(flash){
   updateQueueBadge();
   S.toolCalls=[];
@@ -37,10 +141,13 @@ async function newSession(flash){
 }
 
 async function loadSession(sid){
+  const requestSeq=++_sessionLoadRequestSeq;
   stopApprovalPolling();hideApprovalCard();
   if(typeof stopClarifyPolling==='function') stopClarifyPolling();
   if(typeof hideClarifyCard==='function') hideClarifyCard();
   const data=await api(`/api/session?session_id=${encodeURIComponent(sid)}`);
+  if(requestSeq!==_sessionLoadRequestSeq) return;
+  _pendingSessionSelection=null;
   S.session=data.session;
   S.lastUsage={...(data.session.last_usage||{})};
   localStorage.setItem('hermes-webui-session',S.session.session_id);
@@ -573,8 +680,11 @@ function renderSessionListFromCache(){
   // Note: declared after the groups loop but available via function hoisting.
   function _renderOneSession(s){
     const el=document.createElement('div');
-    const isActive=S.session&&s.session_id===S.session.session_id;
-    el.className='session-item'+(isActive?' active':'')+(isActive&&S.session&&S.session._flash?' new-flash':'')+(s.archived?' archived':'');
+    const activeSid=_pendingSessionSelection||(S.session&&S.session.session_id);
+    const isActive=!!activeSid&&s.session_id===activeSid;
+    const isPending=!!_pendingSessionSelection&&s.session_id===_pendingSessionSelection;
+    el.className='session-item'+(isActive?' active':'')+(isPending?' loading':'')+(isActive&&S.session&&S.session._flash?' new-flash':'')+(s.archived?' archived':'')+(s.is_cli_session?' cli-session':'');
+    if(s.source_tag) el.dataset.source=s.source_tag;
     if(isActive&&S.session&&S.session._flash)delete S.session._flash;
     const rawTitle=s.title||'Untitled';
     const tags=(rawTitle.match(/#[\w-]+/g)||[]);
@@ -701,7 +811,25 @@ function renderSessionListFromCache(){
             await api('/api/session/import_cli',{method:'POST',body:JSON.stringify({session_id:s.session_id})});
           }catch(e){ /* import failed -- fall through to read-only view */ }
         }
-        await loadSession(s.session_id);renderSessionListFromCache();
+        _pendingSessionSelection=s.session_id;
+        localStorage.setItem('hermes-webui-session', s.session_id);
+        showSessionLoadingSkeleton({
+          session_id:s.session_id,
+          title:s.title||'Untitled',
+          workspace:s.workspace||(S.session&&S.session.workspace)||null,
+          model:s.model||($('modelSelect')&&$('modelSelect').value)||'',
+          pinned:!!s.pinned,
+        });
+        renderSessionListFromCache();
+        try{
+          await loadSession(s.session_id);
+        }catch(err){
+          if(_pendingSessionSelection===s.session_id) _pendingSessionSelection=null;
+          renderSessionListFromCache();
+          showToast('Failed to load conversation: '+err.message);
+          return;
+        }
+        renderSessionListFromCache();
         if(typeof closeMobileSidebar==='function')closeMobileSidebar();
       }, 220);
     };
