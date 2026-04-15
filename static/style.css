@@ -173,6 +173,8 @@
   .session-title-row{display:flex;align-items:flex-start;gap:8px;min-width:0;}
   .session-title{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);}
   .session-item.active .session-title{color:var(--gold);}
+  .session-item.loading{box-shadow:inset 0 0 0 1px rgba(124,185,255,.22);}
+  .session-item.loading::before{content:'';position:absolute;left:0;top:8px;bottom:8px;width:2px;border-radius:999px;background:linear-gradient(180deg,var(--blue),transparent);opacity:.9;}
   .session-time{display:none;}
   .session-meta{font-size:11px;line-height:1.35;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   /* ── Session action trigger + dropdown ── */
@@ -1090,6 +1092,17 @@ body.resizing{user-select:none;cursor:col-resize;}
 .thinking-card-body pre{font-family:'SF Mono',ui-monospace,monospace;font-size:11px;line-height:1.5;color:var(--muted);white-space:pre-wrap;word-break:break-word;margin:0;}
 
 .bg-error-banner{background:rgba(229,62,62,.15);border:1px solid rgba(229,62,62,.3);color:#fca5a5;padding:8px 16px;font-size:12px;display:flex;align-items:center;justify-content:space-between;gap:12px;border-radius:0;}
+
+/* ── Boneyard-style session loading skeletons ── */
+.boneyard-skeleton{position:relative;width:100%;margin:0 auto;pointer-events:none;}
+.boneyard-bone{position:absolute;background:var(--surface);opacity:.82;overflow:hidden;}
+.boneyard-bone::after{content:'';position:absolute;inset:0;transform:translateX(-100%);background:linear-gradient(90deg,transparent,rgba(255,255,255,.16),transparent);animation:boneyard-shimmer 1.65s ease-in-out infinite;}
+:root[data-theme="light"] .boneyard-bone::after{background:linear-gradient(90deg,transparent,rgba(255,255,255,.55),transparent);}
+.session-loading-shell{padding:8px 0 18px;}
+.workspace-loading-shell{padding:6px 0 8px;max-width:none;}
+.workspace-loading-shell .boneyard-bone{background:rgba(255,255,255,.065);}
+:root[data-theme="light"] .workspace-loading-shell .boneyard-bone{background:rgba(0,0,0,.06);}
+@keyframes boneyard-shimmer{100%{transform:translateX(100%);}}
 
 /* ── CLI / Agent session items in sidebar ── */
 .session-item.cli-session {
