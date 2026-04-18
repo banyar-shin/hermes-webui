@@ -18,6 +18,7 @@
   <link id="prism-theme" rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/themes/prism-tomorrow.min.css" integrity="sha384-wFjoQjtV1y5jVHbt0p35Ui8aV8GVpEZkyF99OXWqP/eNJDU93D3Ugxkoyh6Y2I4A" crossorigin="anonymous">
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/components/prism-core.min.js" integrity="sha384-MXybTpajaBV0AkcBaCPT4KIvo0FzoCiWXgcihYsw4FUkEz0Pv3JGV6tk2G8vJtDc" crossorigin="anonymous" defer></script>
   <script src="https://cdn.jsdelivr.net/npm/prismjs@1.29.0/plugins/autoloader/prism-autoloader.min.js" integrity="sha384-Uq05+JLko69eOiPr39ta9bh7kld5PKZoU+fF7g0EXTAriEollhZ+DrN8Q/Oi8J2Q" crossorigin="anonymous" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/vis-network@10.0.2/standalone/umd/vis-network.min.js" defer></script>
 </head>
 <body>
 <div class="layout">
@@ -156,6 +157,17 @@
         <!-- Repo detail view (hidden by default) -->
         <div class="graph-detail" id="graphDetail" style="display:none">
           <div class="graph-detail-header" id="graphDetailHeader"></div>
+          <div class="graph-section graph-canvas-section" id="graphCanvasSection">
+            <div class="graph-section-title">Interactive graph view</div>
+            <div class="graph-canvas-shell">
+              <div class="graph-canvas-toolbar">
+                <div class="graph-canvas-hint">Pan, zoom, click nodes, inspect neighbors.</div>
+                <div class="graph-legend" id="graphLegend"></div>
+              </div>
+              <div class="graph-canvas" id="graphCanvas"></div>
+              <div class="graph-inspector" id="graphInspector">Select a node to inspect its neighborhood.</div>
+            </div>
+          </div>
           <div class="graph-section" id="graphTopNodes">
             <div class="graph-section-title" data-i18n="graphs_top_nodes">Top ranked nodes</div>
             <div class="graph-node-list" id="graphNodeList"></div>

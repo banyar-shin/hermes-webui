@@ -38,6 +38,14 @@ def test_index_has_graph_detail_sections():
     assert 'id="graphBackBtn"' in html
 
 
+def test_index_contains_interactive_graph_view_shell():
+    html = read("static/index.html")
+    assert 'id="graphCanvasSection"' in html
+    assert 'id="graphCanvas"' in html
+    assert 'id="graphLegend"' in html
+    assert 'id="graphInspector"' in html
+
+
 # ── CSS tests ───────────────────────────────────────────────────────────────
 
 
@@ -47,6 +55,10 @@ def test_graph_css_rules_exist():
         ".graph-panel",
         ".graph-repo-card",
         ".graph-detail",
+        ".graph-canvas-shell",
+        ".graph-canvas",
+        ".graph-legend",
+        ".graph-inspector",
         ".graph-node-item",
         ".graph-node-rank",
         ".graph-chip",
@@ -81,6 +93,8 @@ def test_panels_js_exposes_graph_functions():
         "async function loadGraphs()",
         "function _renderGraphRepoList(",
         "async function selectGraphRepo(",
+        "function _renderGraphVisualization(",
+        "function _buildGraphTheme(",
         "function _renderGraphTopNodes(",
         "function _renderGraphSuggestions(",
         "function graphBackToList()",
@@ -92,6 +106,7 @@ def test_panels_js_exposes_graph_functions():
 def test_panels_js_calls_graph_api_endpoints():
     js = read("static/panels.js")
     assert "api('/api/graphs')" in js
+    assert "api(`/api/graphs/detail?repo=${encodeURIComponent(repoId)}`)" in js
     assert "api('/api/graphs/query'" in js
 
 

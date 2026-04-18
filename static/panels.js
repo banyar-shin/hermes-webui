@@ -1536,13 +1536,18 @@ function dismissErrorBanner(){
 // ── Graphs panel ────────────────────────────────────────────────────────────
 let _graphsData = null;
 let _graphSelectedRepo = null;
+let _graphNetwork = null;
+let _graphVisualization = null;
+let _graphNodeIndex = new Map();
+let _graphAdjacency = new Map();
+let _graphSelectedNodeId = null;
+let _graphLegendFilter = null;
 
 async function loadGraphs() {
   const listEl = $('graphRepoList');
   const detailEl = $('graphDetail');
   const backBtn = $('graphBackBtn');
   if (!listEl) return;
-  // If a repo is selected, stay on detail view
   if (_graphSelectedRepo) return;
   if (detailEl) detailEl.style.display = 'none';
   if (backBtn) backBtn.style.display = 'none';
@@ -1600,25 +1605,239 @@ async function selectGraphRepo(repo) {
   if (listEl) listEl.style.display = 'none';
   if (detailEl) detailEl.style.display = '';
   if (backBtn) backBtn.style.display = '';
-  // Render header
+
   const headerEl = $('graphDetailHeader');
   if (headerEl) {
-    const nodeCount = repo.node_count || repo.nodes || 0;
-    const edgeCount = repo.edge_count || repo.edges || 0;
+    const nodeCount = repo.node_count || repo.nodes || repo.stats?.node_count || 0;
+    const edgeCount = repo.edge_count || repo.edges || repo.stats?.edge_count || 0;
     headerEl.innerHTML = `
       <div class="graph-detail-name">${li('network',16)} ${esc(repo.name || repo.id)}</div>
-      <div class="graph-detail-meta">${esc(repo.description || '')}${nodeCount ? ` \u00b7 ${t('graphs_nodes', nodeCount)}` : ''}${edgeCount ? ` \u00b7 ${t('graphs_edges', edgeCount)}` : ''}</div>`;
+      <div class="graph-detail-meta">${esc(repo.description || '')}${nodeCount ? ` · ${t('graphs_nodes', nodeCount)}` : ''}${edgeCount ? ` · ${t('graphs_edges', edgeCount)}` : ''}</div>`;
   }
-  // Clear previous results
+
   const resultsEl = $('graphResults');
   if (resultsEl) resultsEl.innerHTML = '';
-  // Load top nodes
-  _renderGraphTopNodes(repo.top_nodes || []);
-  // Load suggested questions
+  _graphSelectedNodeId = null;
+  _graphLegendFilter = null;
+  _graphVisualization = repo.visualization || null;
+  _renderGraphVisualization(_graphVisualization);
+  _renderGraphTopNodes(repo.top_nodes || repo.stats?.top_nodes || [], _graphVisualization);
   _renderGraphSuggestions(repo.suggested_questions || repo.suggestions || []);
 }
 
-function _renderGraphTopNodes(nodes) {
+function _buildGraphTheme(communities) {
+  const styles = getComputedStyle(document.documentElement);
+  const readVar = (name, fallback='') => (styles.getPropertyValue(name) || fallback).trim() || fallback;
+  const accent = readVar('--accent', '#f5c542');
+  const accentText = readVar('--accent-text', '#f8e7b1');
+  const muted = readVar('--muted', '#93a1b2');
+  const text = readVar('--text', '#f4f6fb');
+  const border = readVar('--border', 'rgba(255,255,255,.1)');
+  const bg = readVar('--bg', '#0b1220');
+  const surface = readVar('--panel-bg', bg);
+  const edge = styles.getPropertyValue('--border2').trim() || border;
+  const fallbackPalette = [accent, '#7dd3fc', '#a78bfa', '#34d399', '#fb7185', '#f59e0b', '#60a5fa', '#f472b6'];
+  const communityColors = new Map();
+  (communities || []).forEach((community, index) => {
+    communityColors.set(community.id, community.color || fallbackPalette[index % fallbackPalette.length]);
+  });
+  return { accent, accentText, muted, text, border, bg, surface, edge, communityColors };
+}
+
+function _buildGraphNeighborhood(payload) {
+  _graphNodeIndex = new Map();
+  _graphAdjacency = new Map();
+  if (!payload) return;
+  for (const node of payload.nodes || []) {
+    _graphNodeIndex.set(node.id, node);
+    _graphAdjacency.set(node.id, new Set());
+  }
+  for (const edge of payload.edges || []) {
+    if (!_graphAdjacency.has(edge.from)) _graphAdjacency.set(edge.from, new Set());
+    if (!_graphAdjacency.has(edge.to)) _graphAdjacency.set(edge.to, new Set());
+    _graphAdjacency.get(edge.from).add(edge.to);
+    _graphAdjacency.get(edge.to).add(edge.from);
+  }
+}
+
+function _communityLabelById(communityId) {
+  const communities = _graphVisualization?.communities || [];
+  return communities.find(c => c.id === communityId)?.label || `Community ${communityId}`;
+}
+
+function _renderGraphLegend(communities, theme) {
+  const legendEl = $('graphLegend');
+  if (!legendEl) return;
+  legendEl.innerHTML = '';
+  for (const community of communities || []) {
+    const chip = document.createElement('button');
+    chip.className = 'graph-legend-chip' + (_graphLegendFilter === community.id ? ' is-active' : '');
+    chip.type = 'button';
+    chip.innerHTML = `<span class="graph-legend-swatch" style="background:${esc(theme.communityColors.get(community.id) || theme.accent)}"></span><span>${esc(community.label)} · ${esc(String(community.count))}</span>`;
+    chip.onclick = () => {
+      _graphLegendFilter = _graphLegendFilter === community.id ? null : community.id;
+      _renderGraphVisualization(_graphVisualization);
+    };
+    legendEl.appendChild(chip);
+  }
+}
+
+function _renderGraphVisualization(payload) {
+  const canvasEl = $('graphCanvas');
+  const inspectorEl = $('graphInspector');
+  if (!canvasEl || !inspectorEl) return;
+  if (_graphNetwork && typeof _graphNetwork.destroy === 'function') {
+    _graphNetwork.destroy();
+    _graphNetwork = null;
+  }
+  canvasEl.innerHTML = '';
+  inspectorEl.innerHTML = 'Select a node to inspect its neighborhood.';
+
+  if (!payload || !(payload.nodes || []).length) {
+    canvasEl.innerHTML = `<div class="graph-empty">${li('network', 32)}<div>${esc(t('graphs_no_results'))}</div></div>`;
+    const legendEl = $('graphLegend');
+    if (legendEl) legendEl.innerHTML = '';
+    return;
+  }
+
+  _buildGraphNeighborhood(payload);
+  const theme = _buildGraphTheme(payload.communities || []);
+  _renderGraphLegend(payload.communities || [], theme);
+
+  if (!window.vis || !window.vis.Network) {
+    canvasEl.innerHTML = `<div class="graph-empty">${li('network', 32)}<div>Interactive graph library failed to load.</div></div>`;
+    return;
+  }
+
+  const allowedNodes = new Set(
+    (payload.nodes || [])
+      .filter(node => _graphLegendFilter == null || node.community === _graphLegendFilter)
+      .map(node => node.id)
+  );
+
+  const nodes = (payload.nodes || [])
+    .filter(node => allowedNodes.has(node.id))
+    .map(node => ({
+      id: node.id,
+      label: node.label,
+      value: node.size || Math.max(10, 10 + (node.degree || 0)),
+      font: { color: theme.text, face: 'Inter, system-ui, sans-serif', size: 13, strokeWidth: 0 },
+      borderWidth: _graphSelectedNodeId === node.id ? 3 : 1.5,
+      color: {
+        background: theme.communityColors.get(node.community) || theme.accent,
+        border: _graphSelectedNodeId === node.id ? theme.accentText : theme.border,
+        highlight: {
+          background: theme.communityColors.get(node.community) || theme.accent,
+          border: theme.accentText,
+        },
+        hover: {
+          background: theme.communityColors.get(node.community) || theme.accent,
+          border: theme.accentText,
+        },
+      },
+      shape: 'dot',
+      title: `${node.label}
+${_communityLabelById(node.community)}
+Degree ${node.degree || 0}`,
+    }));
+
+  const edges = (payload.edges || [])
+    .filter(edge => allowedNodes.has(edge.from) && allowedNodes.has(edge.to))
+    .map(edge => ({
+      id: edge.id,
+      from: edge.from,
+      to: edge.to,
+      label: edge.label || '',
+      color: { color: theme.edge, highlight: theme.accent, opacity: 0.55 },
+      selectionWidth: 2.5,
+      width: 1,
+      smooth: { type: 'dynamic', roundness: 0.45 },
+      font: { color: theme.muted, size: 10, strokeWidth: 0, align: 'middle' },
+    }));
+
+  _graphNetwork = new window.vis.Network(
+    canvasEl,
+    { nodes: new window.vis.DataSet(nodes), edges: new window.vis.DataSet(edges) },
+    {
+      autoResize: true,
+      interaction: { hover: true, multiselect: false, navigationButtons: false, keyboard: true },
+      layout: { improvedLayout: true },
+      physics: {
+        stabilization: { iterations: 120, fit: true },
+        barnesHut: { gravitationalConstant: -5000, springLength: 120, springConstant: 0.028, damping: 0.72 },
+      },
+      nodes: { scaling: { min: 10, max: 34 } },
+      edges: payload.directed ? { arrows: { to: { enabled: true, scaleFactor: 0.5 } } } : {},
+    }
+  );
+
+  _graphNetwork.on('click', params => {
+    const nodeId = params.nodes?.[0];
+    if (nodeId) _applyGraphSelection(nodeId, { focus: true });
+    else {
+      _graphSelectedNodeId = null;
+      _syncGraphNodeListSelection();
+      inspectorEl.innerHTML = 'Select a node to inspect its neighborhood.';
+    }
+  });
+
+  _graphNetwork.on('hoverNode', () => { canvasEl.style.cursor = 'pointer'; });
+  _graphNetwork.on('blurNode', () => { canvasEl.style.cursor = ''; });
+
+  if (_graphSelectedNodeId && allowedNodes.has(_graphSelectedNodeId)) {
+    setTimeout(() => _applyGraphSelection(_graphSelectedNodeId, { focus: false }), 30);
+  } else {
+    const seedNode = nodes[0]?.id;
+    if (seedNode) setTimeout(() => _applyGraphSelection(seedNode, { focus: false }), 60);
+  }
+}
+
+function _syncGraphNodeListSelection() {
+  document.querySelectorAll('.graph-node-item[data-graph-node-id]').forEach(el => {
+    el.classList.toggle('is-active', el.dataset.graphNodeId === _graphSelectedNodeId);
+  });
+}
+
+function _applyGraphSelection(nodeId, opts = {}) {
+  if (!_graphVisualization) return;
+  const inspectorEl = $('graphInspector');
+  const node = _graphNodeIndex.get(nodeId);
+  if (!node || !inspectorEl) return;
+  _graphSelectedNodeId = nodeId;
+  _syncGraphNodeListSelection();
+  const neighbors = [...(_graphAdjacency.get(nodeId) || [])]
+    .map(id => _graphNodeIndex.get(id))
+    .filter(Boolean)
+    .sort((a, b) => (b.degree || 0) - (a.degree || 0))
+    .slice(0, 8);
+
+  inspectorEl.innerHTML = `
+    <div class="graph-inspector-title">
+      <span>${esc(node.label)}</span>
+      <span style="color:var(--muted);font-size:11px">${esc(_communityLabelById(node.community))}</span>
+    </div>
+    <div class="graph-inspector-meta">
+      <span>Degree ${esc(String(node.degree || 0))}</span>
+      <span>${esc(node.file_type || 'node')}</span>
+      <span>${esc(node.title || node.label)}</span>
+    </div>
+    <div class="graph-inspector-neighbors">
+      ${neighbors.length ? neighbors.map(neighbor => `<button type="button" data-graph-focus="${esc(neighbor.id)}">${esc(neighbor.label)}</button>`).join('') : '<span style="color:var(--muted)">No direct neighbors.</span>'}
+    </div>`;
+
+  inspectorEl.querySelectorAll('[data-graph-focus]').forEach(btn => {
+    btn.onclick = () => _applyGraphSelection(btn.dataset.graphFocus, { focus: true });
+  });
+
+  if (_graphNetwork) {
+    _graphNetwork.selectNodes([nodeId]);
+    if (opts.focus !== false) {
+      _graphNetwork.focus(nodeId, { scale: 1.08, animation: { duration: 350, easingFunction: 'easeInOutQuad' } });
+    }
+  }
+}
+
+function _renderGraphTopNodes(nodes, visualization) {
   const listEl = $('graphNodeList');
   if (!listEl) return;
   listEl.innerHTML = '';
@@ -1627,10 +1846,14 @@ function _renderGraphTopNodes(nodes) {
     listEl.innerHTML = `<div style="padding:6px 0;font-size:11px;color:var(--muted)">${esc(t('graphs_no_results'))}</div>`;
     return;
   }
+  const visualNodeIds = new Set((visualization?.nodes || []).map(node => node.id));
   for (let i = 0; i < topFive.length; i++) {
     const node = topFive[i];
-    const item = document.createElement('div');
+    const item = document.createElement('button');
+    item.type = 'button';
     item.className = 'graph-node-item';
+    const nodeId = node.id || node.label || node.name;
+    if (visualNodeIds.has(nodeId)) item.dataset.graphNodeId = nodeId;
     const scoreValue = node.score != null ? node.score : (node.edges != null ? node.edges : null);
     const score = scoreValue != null ? String(scoreValue) : '';
     item.innerHTML = `
@@ -1638,8 +1861,12 @@ function _renderGraphTopNodes(nodes) {
       <span class="graph-node-name">${esc(node.name || node.label || node.id)}</span>
       ${node.type ? `<span class="graph-node-type">${esc(node.type)}</span>` : ''}
       ${score ? `<span class="graph-node-score">${esc(score)}</span>` : ''}`;
+    item.onclick = () => {
+      if (nodeId) _applyGraphSelection(nodeId, { focus: true });
+    };
     listEl.appendChild(item);
   }
+  _syncGraphNodeListSelection();
 }
 
 function _renderGraphSuggestions(questions) {
@@ -1663,6 +1890,12 @@ function _renderGraphSuggestions(questions) {
 
 function graphBackToList() {
   _graphSelectedRepo = null;
+  _graphSelectedNodeId = null;
+  _graphLegendFilter = null;
+  if (_graphNetwork && typeof _graphNetwork.destroy === 'function') {
+    _graphNetwork.destroy();
+    _graphNetwork = null;
+  }
   const listEl = $('graphRepoList');
   const detailEl = $('graphDetail');
   const backBtn = $('graphBackBtn');
@@ -1679,7 +1912,6 @@ async function submitGraphQuery() {
   if (!input || !resultsEl || !_graphSelectedRepo) return;
   const query = input.value.trim();
   if (!query) return;
-  // Show loading
   const loadingEl = document.createElement('div');
   loadingEl.className = 'graph-result-loading';
   loadingEl.innerHTML = `<span class="graph-spinner"></span> ${esc(t('graphs_querying'))}`;
@@ -1687,7 +1919,7 @@ async function submitGraphQuery() {
   if (sendBtn) sendBtn.disabled = true;
   input.value = '';
   try {
-    const repoId = _graphSelectedRepo.id || _graphSelectedRepo.name;
+    const repoId = _graphSelectedRepo.id || _graphSelectedRepo.path || _graphSelectedRepo.name;
     const data = await api('/api/graphs/query', {
       method: 'POST',
       body: JSON.stringify({ repository: repoId, query })

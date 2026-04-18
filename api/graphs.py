@@ -146,6 +146,93 @@ def _build_index_entry(
         return None
 
 
+_GRAPH_COMMUNITY_PALETTE = [
+    "#4E79A7",
+    "#F28E2B",
+    "#E15759",
+    "#76B7B2",
+    "#59A14F",
+    "#EDC948",
+    "#B07AA1",
+    "#FF9DA7",
+    "#9C755F",
+    "#BAB0AC",
+]
+
+
+def _build_visualization_payload(graph_json_path: Path) -> dict[str, Any]:
+    """Load graph.json and return a visualization-friendly payload."""
+    with open(graph_json_path, encoding="utf-8") as f:
+        data = json.load(f)
+
+    raw_nodes = data.get("nodes", [])
+    raw_links = data.get("links", [])
+
+    degree: Counter[str] = Counter()
+    for link in raw_links:
+        src = str(link.get("_src") or link.get("source") or "")
+        tgt = str(link.get("_tgt") or link.get("target") or "")
+        if src:
+            degree[src] += 1
+        if tgt:
+            degree[tgt] += 1
+
+    communities: Counter[int] = Counter()
+    nodes: list[dict[str, Any]] = []
+    for node in raw_nodes:
+        node_id = str(node.get("id") or node.get("label") or "")
+        if not node_id:
+            continue
+        community = int(node.get("community", 0) or 0)
+        communities[community] += 1
+        node_degree = int(node.get("degree") or degree.get(node_id, 0))
+        nodes.append(
+            {
+                "id": node_id,
+                "label": str(node.get("label") or node_id),
+                "community": community,
+                "community_name": str(node.get("community_name") or f"Community {community}"),
+                "file_type": node.get("file_type") or node.get("type") or "node",
+                "degree": node_degree,
+                "size": float(node.get("size") or max(12, min(40, 12 + node_degree * 1.6))),
+                "title": str(node.get("title") or node.get("label") or node_id),
+            }
+        )
+
+    edges: list[dict[str, Any]] = []
+    for idx, link in enumerate(raw_links):
+        src = str(link.get("_src") or link.get("source") or "")
+        tgt = str(link.get("_tgt") or link.get("target") or "")
+        if not src or not tgt:
+            continue
+        edges.append(
+            {
+                "id": str(link.get("id") or f"edge-{idx}"),
+                "from": src,
+                "to": tgt,
+                "label": str(link.get("label") or link.get("relation") or ""),
+                "confidence": str(link.get("confidence") or ""),
+            }
+        )
+
+    community_items = [
+        {
+            "id": community_id,
+            "label": f"Community {community_id}",
+            "count": count,
+            "color": _GRAPH_COMMUNITY_PALETTE[community_id % len(_GRAPH_COMMUNITY_PALETTE)],
+        }
+        for community_id, count in sorted(communities.items(), key=lambda item: (-item[1], item[0]))
+    ]
+
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "communities": community_items,
+        "directed": bool(data.get("directed", False)),
+    }
+
+
 # ── Graph JSON parsing (lightweight — no full load for index) ────────────────
 
 
@@ -299,6 +386,12 @@ def get_graph_detail(repo_path: str) -> Optional[dict[str, Any]]:
             entry["report_text"] = None
     else:
         entry["report_text"] = None
+
+    try:
+        entry["visualization"] = _build_visualization_payload(graph_json_path)
+    except Exception as exc:
+        logger.warning("Failed to build graph visualization payload for %s: %s", repo_dir, exc)
+        entry["visualization"] = {"nodes": [], "edges": [], "communities": [], "directed": False}
 
     return entry
 

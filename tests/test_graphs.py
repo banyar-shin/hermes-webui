@@ -176,9 +176,17 @@ class TestGetGraphDetail:
         gdir = repo / "graphify-out"
         gdir.mkdir(parents=True)
         graph_data = {
-            "directed": False, "multigraph": False, "graph": {},
-            "nodes": [{"label": "x", "id": "x", "community": 0}],
-            "links": [], "hyperedges": [],
+            "directed": False,
+            "multigraph": False,
+            "graph": {},
+            "nodes": [
+                {"label": "x", "id": "x", "community": 0, "degree": 2, "file_type": "code"},
+                {"label": "y", "id": "y", "community": 1, "degree": 1, "file_type": "note"},
+            ],
+            "links": [
+                {"source": "x", "target": "y", "relation": "connects", "confidence": "EXTRACTED"},
+            ],
+            "hyperedges": [],
         }
         (gdir / "graph.json").write_text(json.dumps(graph_data))
         (gdir / "GRAPH_REPORT.md").write_text("# Test Report\nSome content here.")
@@ -187,7 +195,10 @@ class TestGetGraphDetail:
         assert detail is not None
         assert detail["name"] == "detail-repo"
         assert detail["report_text"] == "# Test Report\nSome content here."
-        assert detail["stats"]["node_count"] == 1
+        assert detail["stats"]["node_count"] == 2
+        assert detail["visualization"]["nodes"][0]["id"] == "x"
+        assert detail["visualization"]["edges"][0]["from"] == "x"
+        assert detail["visualization"]["communities"][0]["id"] == 0
 
     def test_detail_missing_repo(self, tmp_path: pathlib.Path):
         from api.graphs import get_graph_detail
