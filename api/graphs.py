@@ -14,7 +14,7 @@ import shutil
 import subprocess
 from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ _GRAPHIFY_BIN = os.getenv(
 )
 
 
-def _find_graphify_bin() -> str | None:
+def _find_graphify_bin() -> Optional[str]:
     """Return the graphify binary path if it exists, else None."""
     if Path(_GRAPHIFY_BIN).is_file():
         return _GRAPHIFY_BIN
@@ -44,7 +44,25 @@ def _find_graphify_bin() -> str | None:
 # ── Discovery ────────────────────────────────────────────────────────────────
 
 
-def discover_graph_repos(root: Path | None = None) -> list[dict[str, Any]]:
+def _repo_identity(repo_dir: Path) -> str:
+    """Best-effort stable identity for a repo across git worktrees."""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(repo_dir), "rev-parse", "--git-common-dir"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if proc.returncode == 0:
+            common = proc.stdout.strip()
+            if common:
+                return str((repo_dir / common).resolve())
+    except Exception:
+        pass
+    return str(repo_dir.resolve())
+
+
+def discover_graph_repos(root: Optional[Path] = None) -> list[dict[str, Any]]:
     """Walk ``root`` (default ~/git-repos) for repos containing graphify-out/graph.json.
 
     Returns a lightweight list of repo metadata dicts suitable for a dashboard
@@ -55,8 +73,7 @@ def discover_graph_repos(root: Path | None = None) -> list[dict[str, Any]]:
     if not root.is_dir():
         return []
 
-    results: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    results_by_identity: dict[str, dict[str, Any]] = {}
 
     for dirpath, dirnames, _filenames in os.walk(str(root)):
         depth = dirpath[len(str(root)):].count(os.sep)
@@ -71,13 +88,16 @@ def discover_graph_repos(root: Path | None = None) -> list[dict[str, Any]]:
         graphify_dir = Path(dirpath) / _GRAPHIFY_DIR_NAME
         graph_json_path = graphify_dir / _GRAPH_JSON
         if graph_json_path.is_file():
-            repo_path = str(Path(dirpath))
-            if repo_path in seen:
+            repo_dir = Path(dirpath)
+            identity = _repo_identity(repo_dir)
+            entry = _build_index_entry(repo_dir, graphify_dir, graph_json_path)
+            if not entry:
                 continue
-            seen.add(repo_path)
-            entry = _build_index_entry(Path(dirpath), graphify_dir, graph_json_path)
-            if entry:
-                results.append(entry)
+            previous = results_by_identity.get(identity)
+            if previous is None or entry.get("updated_at", 0) >= previous.get("updated_at", 0):
+                results_by_identity[identity] = entry
+    results = list(results_by_identity.values())
+    results.sort(key=lambda item: item.get("updated_at", 0), reverse=True)
     return results
 
 
@@ -85,7 +105,7 @@ def _build_index_entry(
     repo_dir: Path,
     graphify_dir: Path,
     graph_json_path: Path,
-) -> dict[str, Any] | None:
+) -> Optional[dict[str, Any]]:
     """Build a lightweight index entry for one repo."""
     try:
         stat = graph_json_path.stat()
@@ -252,7 +272,7 @@ def _parse_report_header(report_path: Path) -> dict[str, Any]:
 # ── Detail endpoint ──────────────────────────────────────────────────────────
 
 
-def get_graph_detail(repo_path: str) -> dict[str, Any] | None:
+def get_graph_detail(repo_path: str) -> Optional[dict[str, Any]]:
     """Return full graph detail for a single repo.
 
     Includes everything from the index entry plus the full GRAPH_REPORT.md
@@ -294,7 +314,7 @@ def run_graphify_command(
     command: str,
     args: list[str],
     *,
-    budget: int | None = None,
+    budget: Optional[int] = None,
     dfs: bool = False,
 ) -> dict[str, Any]:
     """Run a graphify CLI command against a repo's graph.json.
@@ -347,6 +367,9 @@ def run_graphify_command(
         )
         output = proc.stdout.strip()
         stderr = proc.stderr.strip()
+
+        filtered_lines = [line for line in output.splitlines() if not line.strip().startswith('warning: skill is from graphify')]
+        output = '\n'.join(filtered_lines).strip()
 
         if proc.returncode != 0:
             return {
