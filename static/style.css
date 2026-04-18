@@ -359,6 +359,7 @@
   .panel-view.active{display:flex;}
   /* Cron panel */
   .cron-list{flex:1;overflow-y:auto;padding:8px;}
+  .cron-section-title{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);padding:8px 4px 6px;}
   .cron-item{border-radius:10px;border:1px solid var(--border);margin-bottom:6px;overflow:hidden;transition:border-color .15s,background .15s;background:rgba(255,255,255,.02);}
   .cron-item:hover{border-color:var(--border2);}
   .cron-header{display:flex;align-items:center;gap:8px;padding:10px 12px;cursor:pointer;}
@@ -660,6 +661,12 @@
     .workspace-toggle-btn,.mobile-files-btn{display:inline-flex!important;}
     .mobile-close-btn{display:flex;}
     #btnCollapseWorkspacePanel{display:none;}
+    /* Control Center: switch from left rail to top tabs on tablets/phones */
+    .settings-shell{grid-template-columns:1fr;gap:0;}
+    .settings-tabs{flex-direction:row;overflow-x:auto;padding:10px 12px;border-right:none;border-bottom:1px solid var(--border);gap:6px;}
+    .settings-tab{flex:1 0 auto;min-width:max-content;}
+    .settings-main{padding:18px 16px;}
+    .hermes-action-grid{grid-template-columns:1fr;}
   }
 
   @media(max-width:640px){

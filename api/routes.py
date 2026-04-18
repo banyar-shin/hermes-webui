@@ -663,8 +663,15 @@ def handle_get(handler, parsed) -> bool:
     # ── Cron API (GET) ──
     if parsed.path == "/api/crons":
         from cron.jobs import list_jobs
+        from api.launchd_jobs import list_launchd_jobs
 
-        return j(handler, {"jobs": list_jobs(include_disabled=True)})
+        return j(
+            handler,
+            {
+                "jobs": list_jobs(include_disabled=True),
+                "launchd_jobs": list_launchd_jobs(),
+            },
+        )
 
     if parsed.path == "/api/crons/output":
         return _handle_cron_output(handler, parsed)

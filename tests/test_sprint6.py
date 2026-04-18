@@ -106,6 +106,7 @@ def test_cron_create_success():
     job_id = result["job"]["id"]
     # Verify it appears in the cron list
     jobs, _ = get("/api/crons")
+    assert isinstance(jobs.get("launchd_jobs"), list)
     ids = [j["id"] for j in jobs["jobs"]]
     assert job_id in ids, f"Created job {job_id} not in list"
 

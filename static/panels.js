@@ -19,62 +19,104 @@ async function switchPanel(name) {
 }
 
 // ── Cron panel ──
+function _appendCronSectionTitle(box, label) {
+  const title = document.createElement('div');
+  title.className = 'cron-section-title';
+  title.textContent = label;
+  box.appendChild(title);
+}
+
+function _renderCronJobItem(job) {
+  const item = document.createElement('div');
+  item.className = 'cron-item';
+  item.id = 'cron-' + job.id;
+  const statusClass = job.enabled === false ? 'disabled' : job.state === 'paused' ? 'paused' : job.last_status === 'error' ? 'error' : 'active';
+  const statusLabel = job.enabled === false ? t('cron_status_off') : job.state === 'paused' ? t('cron_status_paused') : job.last_status === 'error' ? t('cron_status_error') : t('cron_status_active');
+  const nextRun = job.next_run_at ? new Date(job.next_run_at).toLocaleString() : t('not_available');
+  const lastRun = job.last_run_at ? new Date(job.last_run_at).toLocaleString() : t('never');
+  item.innerHTML = `
+    <div class="cron-header" onclick="toggleCron('${job.id}')">
+      <span class="cron-name" title="${esc(job.name)}">${esc(job.name)}</span>
+      <span class="cron-status ${statusClass}">${statusLabel}</span>
+    </div>
+    <div class="cron-body" id="cron-body-${job.id}">
+      <div class="cron-schedule">${li('clock',12)} ${esc(job.schedule_display || job.schedule?.expression || '')} &nbsp;|&nbsp; ${esc(t('cron_next'))}: ${esc(nextRun)} &nbsp;|&nbsp; ${esc(t('cron_last'))}: ${esc(lastRun)}</div>
+      <div class="cron-prompt">${esc((job.prompt||'').slice(0,300))}${(job.prompt||'').length>300?'…':''}</div>
+      <div class="cron-actions">
+        <button class="cron-btn run" onclick="cronRun('${job.id}')">${li('play',12)} ${esc(t('cron_run_now'))}</button>
+        ${job.state==='paused'
+          ? `<button class="cron-btn" onclick="cronResume('${job.id}')">${li('play',12)} ${esc(t('cron_resume'))}</button>`
+          : `<button class="cron-btn pause" onclick="cronPause('${job.id}')">${li('pause',12)} ${esc(t('cron_pause'))}</button>`}
+        <button class="cron-btn" onclick="cronEditOpen('${job.id}',${JSON.stringify(job).replace(/"/g,'&quot;')})">${li('pencil',12)} ${esc(t('edit'))}</button>
+        <button class="cron-btn" style="border-color:rgba(201,168,76,.3);color:var(--accent)" onclick="cronDelete('${job.id}')">${li('trash-2',12)} ${esc(t('delete_title'))}</button>
+      </div>
+      <div id="cron-edit-${job.id}" style="display:none;margin-top:8px;border-top:1px solid var(--border);padding-top:8px">
+        <input id="cron-edit-name-${job.id}" placeholder="${esc(t('cron_job_name_placeholder'))}" style="width:100%;background:rgba(255,255,255,.05);border:1px solid var(--border2);border-radius:6px;color:var(--text);padding:5px 8px;font-size:12px;outline:none;margin-bottom:5px;box-sizing:border-box">
+        <input id="cron-edit-schedule-${job.id}" placeholder="${esc(t('cron_schedule_placeholder'))}" style="width:100%;background:rgba(255,255,255,.05);border:1px solid var(--border2);border-radius:6px;color:var(--text);padding:5px 8px;font-size:12px;outline:none;margin-bottom:5px;box-sizing:border-box">
+        <textarea id="cron-edit-prompt-${job.id}" rows="3" placeholder="${esc(t('cron_prompt_placeholder'))}" style="width:100%;background:rgba(255,255,255,.05);border:1px solid var(--border2);border-radius:6px;color:var(--text);padding:5px 8px;font-size:12px;outline:none;resize:none;font-family:inherit;margin-bottom:5px;box-sizing:border-box"></textarea>
+        <div id="cron-edit-err-${job.id}" style="font-size:11px;color:var(--accent);display:none;margin-bottom:5px"></div>
+        <div style="display:flex;gap:6px">
+          <button class="cron-btn run" style="flex:1" onclick="cronEditSave('${job.id}')">${esc(t('save'))}</button>
+          <button class="cron-btn" style="flex:1" onclick="cronEditClose('${job.id}')">${esc(t('cancel'))}</button>
+        </div>
+      </div>
+      <div id="cron-output-${job.id}">
+        <div class="cron-last-header" style="display:flex;align-items:center;justify-content:space-between">
+          <span>${esc(t('cron_last_output'))}</span>
+          <button class="cron-btn" style="padding:1px 8px;font-size:10px" onclick="loadCronHistory('${job.id}',this)">${esc(t('cron_all_runs'))}</button>
+        </div>
+        <div class="cron-last" id="cron-out-text-${job.id}" style="color:var(--muted);font-size:11px">${esc(t('loading'))}</div>
+        <div id="cron-history-${job.id}" style="display:none"></div>
+      </div>
+    </div>`;
+  loadCronOutput(job.id);
+  return item;
+}
+
+function _renderLaunchdJobItem(job) {
+  const safeId = job.id.replace(/[^a-zA-Z0-9_-]/g, '-');
+  const item = document.createElement('div');
+  item.className = 'cron-item';
+  item.id = 'launchd-' + safeId;
+  const details = [
+    `${t('launchd_label')}: ${job.label || t('not_available')}`,
+    `${t('launchd_schedule')}: ${job.schedule_display || t('not_available')}`,
+    `${t('launchd_pid')}: ${job.runtime?.pid ?? t('not_available')}`,
+  ];
+  if (job.stdout_path) details.push(`${t('launchd_stdout')}: ${job.stdout_path}`);
+  if (job.stderr_path) details.push(`${t('launchd_stderr')}: ${job.stderr_path}`);
+  item.innerHTML = `
+    <div class="cron-header" onclick="toggleCron('launchd-${safeId}')">
+      <span class="cron-name" title="${esc(job.name || job.label)}">${esc(job.name || job.label)}</span>
+      <span class="cron-status ${esc(job.status_class || 'disabled')}">${esc(job.status_label || t('launchd_not_loaded'))}</span>
+    </div>
+    <div class="cron-body" id="cron-body-launchd-${safeId}">
+      <div class="cron-schedule">${li('clock',12)} ${esc(job.schedule_display || t('not_available'))}</div>
+      <div class="cron-prompt">${esc(details.join('\n'))}</div>
+      <div class="cron-last-header">${esc(t('launchd_details'))}</div>
+      <div class="cron-last">${esc(job.plist_path || '')}${job.working_directory ? `\n${t('launchd_working_dir')}: ${job.working_directory}` : ''}${job.program ? `\n${t('launchd_program')}: ${job.program}` : ''}${job.runtime?.last_exit_code ? `\n${t('launchd_last_exit')}: ${job.runtime.last_exit_code}` : ''}</div>
+    </div>`;
+  return item;
+}
+
 async function loadCrons() {
   const box = $('cronList');
   try {
     const data = await api('/api/crons');
-    if (!data.jobs || !data.jobs.length) {
+    const cronJobs = data.jobs || [];
+    const launchdJobs = data.launchd_jobs || [];
+    if (!cronJobs.length && !launchdJobs.length) {
       box.innerHTML = `<div style="padding:16px;color:var(--muted);font-size:12px">${esc(t('cron_no_jobs'))}</div>`;
       return;
     }
     box.innerHTML = '';
-    for (const job of data.jobs) {
-      const item = document.createElement('div');
-      item.className = 'cron-item';
-      item.id = 'cron-' + job.id;
-      const statusClass = job.enabled === false ? 'disabled' : job.state === 'paused' ? 'paused' : job.last_status === 'error' ? 'error' : 'active';
-      const statusLabel = job.enabled === false ? t('cron_status_off') : job.state === 'paused' ? t('cron_status_paused') : job.last_status === 'error' ? t('cron_status_error') : t('cron_status_active');
-      const nextRun = job.next_run_at ? new Date(job.next_run_at).toLocaleString() : t('not_available');
-      const lastRun = job.last_run_at ? new Date(job.last_run_at).toLocaleString() : t('never');
-      item.innerHTML = `
-        <div class="cron-header" onclick="toggleCron('${job.id}')">
-          <span class="cron-name" title="${esc(job.name)}">${esc(job.name)}</span>
-          <span class="cron-status ${statusClass}">${statusLabel}</span>
-        </div>
-        <div class="cron-body" id="cron-body-${job.id}">
-          <div class="cron-schedule">${li('clock',12)} ${esc(job.schedule_display || job.schedule?.expression || '')} &nbsp;|&nbsp; ${esc(t('cron_next'))}: ${esc(nextRun)} &nbsp;|&nbsp; ${esc(t('cron_last'))}: ${esc(lastRun)}</div>
-          <div class="cron-prompt">${esc((job.prompt||'').slice(0,300))}${(job.prompt||'').length>300?'…':''}</div>
-          <div class="cron-actions">
-            <button class="cron-btn run" onclick="cronRun('${job.id}')">${li('play',12)} ${esc(t('cron_run_now'))}</button>
-            ${job.state==='paused'
-              ? `<button class="cron-btn" onclick="cronResume('${job.id}')">${li('play',12)} ${esc(t('cron_resume'))}</button>`
-              : `<button class="cron-btn pause" onclick="cronPause('${job.id}')">${li('pause',12)} ${esc(t('cron_pause'))}</button>`}
-            <button class="cron-btn" onclick="cronEditOpen('${job.id}',${JSON.stringify(job).replace(/"/g,'&quot;')})">${li('pencil',12)} ${esc(t('edit'))}</button>
-            <button class="cron-btn" style="border-color:var(--accent-bg-strong);color:var(--accent-text)" onclick="cronDelete('${job.id}')">${li('trash-2',12)} ${esc(t('delete_title'))}</button>
-          </div>
-          <!-- Inline edit form, hidden by default -->
-          <div id="cron-edit-${job.id}" style="display:none;margin-top:8px;border-top:1px solid var(--border);padding-top:8px">
-            <input id="cron-edit-name-${job.id}" placeholder="${esc(t('cron_job_name_placeholder'))}" style="width:100%;background:rgba(255,255,255,.05);border:1px solid var(--border2);border-radius:6px;color:var(--text);padding:5px 8px;font-size:12px;outline:none;margin-bottom:5px;box-sizing:border-box">
-            <input id="cron-edit-schedule-${job.id}" placeholder="${esc(t('cron_schedule_placeholder'))}" style="width:100%;background:rgba(255,255,255,.05);border:1px solid var(--border2);border-radius:6px;color:var(--text);padding:5px 8px;font-size:12px;outline:none;margin-bottom:5px;box-sizing:border-box">
-            <textarea id="cron-edit-prompt-${job.id}" rows="3" placeholder="${esc(t('cron_prompt_placeholder'))}" style="width:100%;background:rgba(255,255,255,.05);border:1px solid var(--border2);border-radius:6px;color:var(--text);padding:5px 8px;font-size:12px;outline:none;resize:none;font-family:inherit;margin-bottom:5px;box-sizing:border-box"></textarea>
-            <div id="cron-edit-err-${job.id}" style="font-size:11px;color:var(--accent);display:none;margin-bottom:5px"></div>
-            <div style="display:flex;gap:6px">
-              <button class="cron-btn run" style="flex:1" onclick="cronEditSave('${job.id}')">${esc(t('save'))}</button>
-              <button class="cron-btn" style="flex:1" onclick="cronEditClose('${job.id}')">${esc(t('cancel'))}</button>
-            </div>
-          </div>
-          <div id="cron-output-${job.id}">
-            <div class="cron-last-header" style="display:flex;align-items:center;justify-content:space-between">
-              <span>${esc(t('cron_last_output'))}</span>
-              <button class="cron-btn" style="padding:1px 8px;font-size:10px" onclick="loadCronHistory('${job.id}',this)">${esc(t('cron_all_runs'))}</button>
-            </div>
-            <div class="cron-last" id="cron-out-text-${job.id}" style="color:var(--muted);font-size:11px">${esc(t('loading'))}</div>
-            <div id="cron-history-${job.id}" style="display:none"></div>
-          </div>
-        </div>`;
-      box.appendChild(item);
-      // Eagerly load last output for visible items
-      loadCronOutput(job.id);
+    if (cronJobs.length) {
+      _appendCronSectionTitle(box, t('cron_section_agent_jobs'));
+      for (const job of cronJobs) box.appendChild(_renderCronJobItem(job));
+    }
+    if (launchdJobs.length) {
+      _appendCronSectionTitle(box, t('cron_section_launchd_jobs'));
+      for (const job of launchdJobs) box.appendChild(_renderLaunchdJobItem(job));
     }
   } catch(e) { box.innerHTML = `<div style="padding:12px;color:var(--accent);font-size:12px">${esc(t('error_prefix'))}${esc(e.message)}</div>`; }
 }
