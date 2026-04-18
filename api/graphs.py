@@ -12,7 +12,7 @@ import os
 import re
 import shutil
 import subprocess
-from collections import Counter
+from collections import Counter, deque
 from pathlib import Path
 from typing import Any, Optional
 
@@ -359,7 +359,7 @@ def _parse_report_header(report_path: Path) -> dict[str, Any]:
 # ── Detail endpoint ──────────────────────────────────────────────────────────
 
 
-def get_graph_detail(repo_path: str) -> Optional[dict[str, Any]]:
+def get_graph_detail(repo_path: str, *, include_visualization: bool = True) -> Optional[dict[str, Any]]:
     """Return full graph detail for a single repo.
 
     Includes everything from the index entry plus the full GRAPH_REPORT.md
@@ -388,12 +388,279 @@ def get_graph_detail(repo_path: str) -> Optional[dict[str, Any]]:
         entry["report_text"] = None
 
     try:
-        entry["visualization"] = _build_visualization_payload(graph_json_path)
+        entry["visualization"] = _build_visualization_payload(graph_json_path) if include_visualization else None
     except Exception as exc:
         logger.warning("Failed to build graph visualization payload for %s: %s", repo_dir, exc)
         entry["visualization"] = {"nodes": [], "edges": [], "communities": [], "directed": False}
 
     return entry
+
+
+def _load_graph_model(repo_path: str) -> Optional[dict[str, Any]]:
+    repo_dir = Path(repo_path)
+    graph_json_path = repo_dir / _GRAPHIFY_DIR_NAME / _GRAPH_JSON
+    if not graph_json_path.is_file():
+        return None
+    with open(graph_json_path, encoding="utf-8") as f:
+        data = json.load(f)
+
+    node_map: dict[str, dict[str, Any]] = {}
+    adjacency: dict[str, set[str]] = {}
+    edges: list[dict[str, Any]] = []
+
+    for node in data.get("nodes", []):
+        node_id = str(node.get("id") or node.get("label") or "")
+        if not node_id:
+            continue
+        normalized = dict(node)
+        normalized["id"] = node_id
+        normalized["label"] = str(node.get("label") or node_id)
+        normalized["community"] = int(node.get("community", 0) or 0)
+        normalized["degree"] = int(node.get("degree", 0) or 0)
+        normalized["file_type"] = node.get("file_type") or node.get("type") or "node"
+        normalized["summary"] = str(node.get("summary") or node.get("description") or node.get("title") or "")
+        node_map[node_id] = normalized
+        adjacency.setdefault(node_id, set())
+
+    for idx, link in enumerate(data.get("links", [])):
+        src = str(link.get("_src") or link.get("source") or "")
+        tgt = str(link.get("_tgt") or link.get("target") or "")
+        if not src or not tgt:
+            continue
+        adjacency.setdefault(src, set()).add(tgt)
+        adjacency.setdefault(tgt, set()).add(src)
+        edges.append(
+            {
+                "id": str(link.get("id") or f"edge-{idx}"),
+                "from": src,
+                "to": tgt,
+                "label": str(link.get("label") or link.get("relation") or ""),
+                "confidence": str(link.get("confidence") or ""),
+            }
+        )
+
+    for node_id, neighbors in adjacency.items():
+        if node_id in node_map and not node_map[node_id].get("degree"):
+            node_map[node_id]["degree"] = len(neighbors)
+
+    communities = Counter(node.get("community", 0) for node in node_map.values())
+    return {
+        "repo_dir": repo_dir,
+        "graph_json_path": graph_json_path,
+        "directed": bool(data.get("directed", False)),
+        "nodes": node_map,
+        "edges": edges,
+        "adjacency": adjacency,
+        "communities": communities,
+    }
+
+
+def _make_community_items(counter: Counter[int], *, limit: Optional[int] = None) -> list[dict[str, Any]]:
+    items = [
+        {
+            "id": community_id,
+            "label": f"Community {community_id}",
+            "count": count,
+            "color": _GRAPH_COMMUNITY_PALETTE[community_id % len(_GRAPH_COMMUNITY_PALETTE)],
+        }
+        for community_id, count in sorted(counter.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    return items[:limit] if limit else items
+
+
+def _build_slice_payload(model: dict[str, Any], node_ids: list[str], *, highlighted_edges: Optional[set[str]] = None) -> dict[str, Any]:
+    highlighted_edges = highlighted_edges or set()
+    node_id_set = {nid for nid in node_ids if nid in model["nodes"]}
+    nodes = []
+    community_counts: Counter[int] = Counter()
+    for nid in node_ids:
+        node = model["nodes"].get(nid)
+        if not node:
+            continue
+        community = int(node.get("community", 0) or 0)
+        community_counts[community] += 1
+        degree = int(node.get("degree", 0) or len(model["adjacency"].get(nid, ())))
+        nodes.append(
+            {
+                "id": nid,
+                "label": node.get("label") or nid,
+                "community": community,
+                "community_name": node.get("community_name") or f"Community {community}",
+                "file_type": node.get("file_type") or "node",
+                "degree": degree,
+                "size": float(node.get("size") or max(12, min(40, 12 + degree * 1.6))),
+                "title": node.get("title") or node.get("label") or nid,
+                "summary": node.get("summary") or "",
+            }
+        )
+
+    edges = []
+    for edge in model["edges"]:
+        if edge["from"] in node_id_set and edge["to"] in node_id_set:
+            item = dict(edge)
+            if edge["id"] in highlighted_edges:
+                item["highlighted"] = True
+            edges.append(item)
+
+    nodes.sort(key=lambda item: (-item.get("degree", 0), item.get("label", item["id"])))
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "communities": _make_community_items(community_counts),
+        "directed": model["directed"],
+    }
+
+
+def _pick_focus_node(model: dict[str, Any]) -> Optional[str]:
+    if not model["nodes"]:
+        return None
+    return max(model["nodes"].values(), key=lambda node: (node.get("degree", 0), node.get("label", ""))).get("id")
+
+
+def get_graph_overview(repo_path: str, *, node_limit: int = 48) -> Optional[dict[str, Any]]:
+    model = _load_graph_model(repo_path)
+    if not model:
+        return None
+    ranked = sorted(model["nodes"].values(), key=lambda node: (-node.get("degree", 0), node.get("label", node["id"])))
+    selected = [node["id"] for node in ranked[:node_limit]]
+    focus_node = selected[0] if selected else None
+    return {
+        "mode": "overview",
+        "focus": {"node_id": focus_node, "seed_nodes": [focus_node] if focus_node else []},
+        "visualization": _build_slice_payload(model, selected),
+        "search": search_graph_nodes(repo_path, "", limit=12),
+    }
+
+
+def get_graph_neighborhood(repo_path: str, node_id: str, *, depth: int = 1, limit: int = 120) -> Optional[dict[str, Any]]:
+    model = _load_graph_model(repo_path)
+    if not model or node_id not in model["nodes"]:
+        return None
+    depth = max(1, min(int(depth), 4))
+    seen = {node_id}
+    queue = deque([(node_id, 0)])
+    ordered = [node_id]
+    while queue and len(ordered) < limit:
+        current, current_depth = queue.popleft()
+        if current_depth >= depth:
+            continue
+        neighbors = sorted(model["adjacency"].get(current, ()), key=lambda nid: (-model["nodes"].get(nid, {}).get("degree", 0), nid))
+        for neighbor in neighbors:
+            if neighbor in seen:
+                continue
+            seen.add(neighbor)
+            ordered.append(neighbor)
+            if len(ordered) >= limit:
+                break
+            queue.append((neighbor, current_depth + 1))
+    return {
+        "mode": "focus",
+        "focus": {"node_id": node_id, "seed_nodes": [node_id], "depth": depth},
+        "visualization": _build_slice_payload(model, ordered),
+        "inspector": model["nodes"][node_id],
+    }
+
+
+def expand_graph_neighborhood(repo_path: str, seed_nodes: list[str], *, depth: int = 1, limit: int = 140) -> Optional[dict[str, Any]]:
+    model = _load_graph_model(repo_path)
+    if not model:
+        return None
+    valid_seeds = [nid for nid in seed_nodes if nid in model["nodes"]]
+    if not valid_seeds:
+        return None
+    seen = set(valid_seeds)
+    ordered = list(valid_seeds)
+    queue = deque((nid, 0) for nid in valid_seeds)
+    depth = max(1, min(int(depth), 3))
+    while queue and len(ordered) < limit:
+        current, current_depth = queue.popleft()
+        if current_depth >= depth:
+            continue
+        neighbors = sorted(model["adjacency"].get(current, ()), key=lambda nid: (-model["nodes"].get(nid, {}).get("degree", 0), nid))
+        for neighbor in neighbors:
+            if neighbor in seen:
+                continue
+            seen.add(neighbor)
+            ordered.append(neighbor)
+            if len(ordered) >= limit:
+                break
+            queue.append((neighbor, current_depth + 1))
+    return {
+        "mode": "explore",
+        "focus": {"seed_nodes": valid_seeds, "depth": depth},
+        "visualization": _build_slice_payload(model, ordered),
+    }
+
+
+def search_graph_nodes(repo_path: str, query: str, *, limit: int = 20) -> list[dict[str, Any]]:
+    model = _load_graph_model(repo_path)
+    if not model:
+        return []
+    query_norm = (query or "").strip().lower()
+    nodes = list(model["nodes"].values())
+    if query_norm:
+        nodes = [
+            node for node in nodes
+            if query_norm in str(node.get("label", "")).lower()
+            or query_norm in str(node.get("id", "")).lower()
+            or query_norm in str(node.get("summary", "")).lower()
+        ]
+    ranked = sorted(
+        nodes,
+        key=lambda node: (
+            0 if query_norm and str(node.get("label", "")).lower().startswith(query_norm) else 1,
+            0 if query_norm and query_norm in str(node.get("label", "")).lower() else 1,
+            -node.get("degree", 0),
+            str(node.get("label", "")),
+        ),
+    )
+    return [
+        {
+            "id": node["id"],
+            "label": node.get("label") or node["id"],
+            "community": node.get("community", 0),
+            "degree": node.get("degree", 0),
+            "summary": node.get("summary") or "",
+            "file_type": node.get("file_type") or "node",
+        }
+        for node in ranked[:limit]
+    ]
+
+
+def find_graph_path(repo_path: str, from_id: str, to_id: str) -> Optional[dict[str, Any]]:
+    model = _load_graph_model(repo_path)
+    if not model or from_id not in model["nodes"] or to_id not in model["nodes"]:
+        return None
+    queue = deque([from_id])
+    parents: dict[str, Optional[str]] = {from_id: None}
+    while queue:
+        current = queue.popleft()
+        if current == to_id:
+            break
+        for neighbor in sorted(model["adjacency"].get(current, ())):
+            if neighbor in parents:
+                continue
+            parents[neighbor] = current
+            queue.append(neighbor)
+    if to_id not in parents:
+        return None
+    path_nodes = []
+    current = to_id
+    while current is not None:
+        path_nodes.append(current)
+        current = parents[current]
+    path_nodes.reverse()
+    highlighted_edges: set[str] = set()
+    for left, right in zip(path_nodes, path_nodes[1:]):
+        for edge in model["edges"]:
+            if {edge["from"], edge["to"]} == {left, right}:
+                highlighted_edges.add(edge["id"])
+                break
+    return {
+        "mode": "path",
+        "focus": {"from": from_id, "to": to_id, "path": path_nodes},
+        "visualization": _build_slice_payload(model, path_nodes, highlighted_edges=highlighted_edges),
+    }
 
 
 # ── Graphify CLI execution ───────────────────────────────────────────────────

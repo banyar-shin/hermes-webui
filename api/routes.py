@@ -757,12 +757,69 @@ def handle_get(handler, parsed) -> bool:
 
         qs = parse_qs(parsed.query)
         repo_path = qs.get("repo", [""])[0]
+        include_visualization = qs.get("lite", [""])[0] not in {"1", "true", "yes"}
         if not repo_path:
             return bad(handler, "repo query parameter required")
-        detail = get_graph_detail(repo_path)
+        detail = get_graph_detail(repo_path, include_visualization=include_visualization)
         if detail is None:
             return bad(handler, "Repo not found or has no graphify-out", 404)
         return j(handler, detail)
+
+    if parsed.path == "/api/graphs/overview":
+        from api.graphs import get_graph_overview
+
+        qs = parse_qs(parsed.query)
+        repo_path = qs.get("repo", [""])[0]
+        if not repo_path:
+            return bad(handler, "repo query parameter required")
+        overview = get_graph_overview(repo_path)
+        if overview is None:
+            return bad(handler, "Repo not found or has no graphify-out", 404)
+        return j(handler, overview)
+
+    if parsed.path == "/api/graphs/neighborhood":
+        from api.graphs import get_graph_neighborhood
+
+        qs = parse_qs(parsed.query)
+        repo_path = qs.get("repo", [""])[0]
+        node_id = qs.get("node", [""])[0]
+        depth = qs.get("depth", ["1"])[0]
+        if not repo_path:
+            return bad(handler, "repo query parameter required")
+        if not node_id:
+            return bad(handler, "node query parameter required")
+        neighborhood = get_graph_neighborhood(repo_path, node_id, depth=int(depth or 1))
+        if neighborhood is None:
+            return bad(handler, "Repo or node not found", 404)
+        return j(handler, neighborhood)
+
+    if parsed.path == "/api/graphs/search":
+        from api.graphs import search_graph_nodes
+
+        qs = parse_qs(parsed.query)
+        repo_path = qs.get("repo", [""])[0]
+        query = qs.get("q", [""])[0]
+        if not repo_path:
+            return bad(handler, "repo query parameter required")
+        if not query.strip():
+            return bad(handler, "q query parameter required")
+        return j(handler, {"results": search_graph_nodes(repo_path, query)})
+
+    if parsed.path == "/api/graphs/path":
+        from api.graphs import find_graph_path
+
+        qs = parse_qs(parsed.query)
+        repo_path = qs.get("repo", [""])[0]
+        from_id = qs.get("from", [""])[0]
+        to_id = qs.get("to", [""])[0]
+        if not repo_path:
+            return bad(handler, "repo query parameter required")
+        if not from_id or not to_id:
+            return bad(handler, '"from" and "to" query parameters required')
+        path_result = find_graph_path(repo_path, from_id, to_id)
+        if path_result is None:
+            return bad(handler, "Path not found", 404)
+        return j(handler, path_result)
 
     return False  # 404
 
@@ -1333,6 +1390,20 @@ def handle_post(handler, parsed) -> bool:
         return True
 
     # ── Graphs API (POST) ──
+    if parsed.path == "/api/graphs/expand":
+        from api.graphs import expand_graph_neighborhood
+
+        repo = body.get("repo") or body.get("repository")
+        if not repo:
+            return bad(handler, '"repo" field required')
+        seed_nodes = body.get("seed_nodes") or body.get("nodes") or []
+        if not seed_nodes:
+            return bad(handler, '"seed_nodes" field required')
+        result = expand_graph_neighborhood(repo, [str(node) for node in seed_nodes], depth=int(body.get("depth", 1) or 1))
+        if result is None:
+            return bad(handler, "Repo or seed nodes not found", 404)
+        return j(handler, result)
+
     if parsed.path == "/api/graphs/query":
         from api.graphs import run_graphify_command
 

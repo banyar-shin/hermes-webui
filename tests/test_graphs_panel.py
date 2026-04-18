@@ -30,6 +30,16 @@ def test_index_contains_graphs_panel_view():
     assert 'id="graphResults"' in html
 
 
+def test_index_contains_graph_workspace_shell():
+    html = read("static/index.html")
+    assert 'id="graphWorkspace"' in html
+    assert 'id="graphMainCanvas"' in html
+    assert 'id="graphModeTabs"' in html
+    assert 'id="graphSearchInput"' in html
+    assert 'id="graphExpandBtn"' in html
+    assert 'id="graphPathBtn"' in html
+
+
 def test_index_has_graph_detail_sections():
     html = read("static/index.html")
     assert 'id="graphNodeList"' in html
@@ -55,6 +65,12 @@ def test_graph_css_rules_exist():
         ".graph-panel",
         ".graph-repo-card",
         ".graph-detail",
+        ".graph-app-shell",
+        ".graph-sidebar-stack",
+        ".graph-workspace",
+        ".graph-main-canvas",
+        ".graph-mode-tabs",
+        ".graph-mode-tab",
         ".graph-canvas-shell",
         ".graph-canvas",
         ".graph-legend",
@@ -93,6 +109,11 @@ def test_panels_js_exposes_graph_functions():
         "async function loadGraphs()",
         "function _renderGraphRepoList(",
         "async function selectGraphRepo(",
+        "async function _loadGraphOverview(",
+        "async function _loadGraphNeighborhood(",
+        "async function expandSelectedGraphNode(",
+        "async function searchGraphNodes(",
+        "async function loadGraphPathBetweenTopNodes(",
         "function _renderGraphVisualization(",
         "function _buildGraphTheme(",
         "function _renderGraphTopNodes(",
@@ -106,7 +127,12 @@ def test_panels_js_exposes_graph_functions():
 def test_panels_js_calls_graph_api_endpoints():
     js = read("static/panels.js")
     assert "api('/api/graphs')" in js
-    assert "api(`/api/graphs/detail?repo=${encodeURIComponent(repoId)}`)" in js
+    assert "api(`/api/graphs/detail?repo=${encodeURIComponent(repoId)}&lite=1`)" in js
+    assert "api(`/api/graphs/overview?repo=${encodeURIComponent(repoId)}`)" in js
+    assert "api(`/api/graphs/neighborhood?repo=${encodeURIComponent(repoId)}&node=${encodeURIComponent(nodeId)}&depth=${depth}`)" in js
+    assert "api(`/api/graphs/search?repo=${encodeURIComponent(repoId)}&q=${encodeURIComponent(query)}`)" in js
+    assert "api(`/api/graphs/path?repo=${encodeURIComponent(repoId)}&from=${encodeURIComponent(fromId)}&to=${encodeURIComponent(toId)}`)" in js
+    assert "api('/api/graphs/expand'" in js
     assert "api('/api/graphs/query'" in js
 
 

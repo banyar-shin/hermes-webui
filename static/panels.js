@@ -3,6 +3,7 @@ let _skillsData = null; // cached skills list
 
 async function switchPanel(name) {
   _currentPanel = name;
+  document.body.classList.toggle('graphs-mode', name === 'graphs');
   // Update nav tabs
   document.querySelectorAll('.nav-tab').forEach(t => t.classList.toggle('active', t.dataset.panel === name));
   // Update panel views
@@ -17,6 +18,11 @@ async function switchPanel(name) {
   if (name === 'profiles') await loadProfilesPanel();
   if (name === 'todos') loadTodos();
   if (name === 'graphs') await loadGraphs();
+  if (name !== 'graphs') {
+    const workspace = $('graphWorkspace');
+    if (workspace) workspace.style.display = 'none';
+    if (typeof syncTopbar === 'function') syncTopbar();
+  }
 }
 
 // ── Cron panel ──
@@ -1537,28 +1543,47 @@ function dismissErrorBanner(){
 let _graphsData = null;
 let _graphSelectedRepo = null;
 let _graphNetwork = null;
+let _graphMainNetwork = null;
 let _graphVisualization = null;
+let _graphWorkspaceData = null;
 let _graphNodeIndex = new Map();
 let _graphAdjacency = new Map();
 let _graphSelectedNodeId = null;
 let _graphLegendFilter = null;
+let _graphMode = 'overview';
 
 async function loadGraphs() {
   const listEl = $('graphRepoList');
   const detailEl = $('graphDetail');
   const backBtn = $('graphBackBtn');
+  const workspace = $('graphWorkspace');
+  document.body.classList.add('graphs-mode');
+  if (workspace) workspace.style.display = 'flex';
   if (!listEl) return;
-  if (_graphSelectedRepo) return;
-  if (detailEl) detailEl.style.display = 'none';
-  if (backBtn) backBtn.style.display = 'none';
-  listEl.style.display = '';
+  if (!_graphSelectedRepo) {
+    if (detailEl) detailEl.style.display = 'none';
+    if (backBtn) backBtn.style.display = 'none';
+    listEl.style.display = '';
+  }
   try {
     const data = await api('/api/graphs');
     _graphsData = data.repositories || data.repos || [];
     _renderGraphRepoList(_graphsData);
+    if (_graphSelectedRepo) _syncGraphWorkspaceMeta();
+    else _setGraphTopbar();
   } catch (e) {
     listEl.innerHTML = `<div class="graph-empty">${li('network',32)}<div>${esc(t('graphs_no_repos'))}</div><div style="margin-top:4px;font-size:11px">${esc(t('graphs_no_repos_hint'))}</div></div>`;
   }
+}
+
+function _setGraphTopbar() {
+  const title = _graphSelectedRepo ? `${_graphSelectedRepo.name || _graphSelectedRepo.id} graph` : 'Knowledge graphs';
+  const meta = _graphSelectedRepo
+    ? `${_graphMode[0].toUpperCase() + _graphMode.slice(1)} mode · ${(_graphWorkspaceData?.visualization?.nodes || []).length} visible nodes`
+    : 'Browse a repo, then explore the graph in the main canvas';
+  if ($('topbarTitle')) $('topbarTitle').textContent = title;
+  if ($('topbarMeta')) $('topbarMeta').textContent = meta;
+  document.title = `${title} — ${(window._botName || 'Hermes')}`;
 }
 
 function _renderGraphRepoList(repos) {
@@ -1593,7 +1618,7 @@ function _renderGraphRepoList(repos) {
 async function selectGraphRepo(repo) {
   const repoId = repo.id || repo.path || repo.name;
   try {
-    const detail = await api(`/api/graphs/detail?repo=${encodeURIComponent(repoId)}`);
+    const detail = await api(`/api/graphs/detail?repo=${encodeURIComponent(repoId)}&lite=1`);
     _graphSelectedRepo = detail || repo;
   } catch (_e) {
     _graphSelectedRepo = repo;
@@ -1602,6 +1627,8 @@ async function selectGraphRepo(repo) {
   const listEl = $('graphRepoList');
   const detailEl = $('graphDetail');
   const backBtn = $('graphBackBtn');
+  const workspace = $('graphWorkspace');
+  if (workspace) workspace.style.display = 'flex';
   if (listEl) listEl.style.display = 'none';
   if (detailEl) detailEl.style.display = '';
   if (backBtn) backBtn.style.display = '';
@@ -1610,9 +1637,10 @@ async function selectGraphRepo(repo) {
   if (headerEl) {
     const nodeCount = repo.node_count || repo.nodes || repo.stats?.node_count || 0;
     const edgeCount = repo.edge_count || repo.edges || repo.stats?.edge_count || 0;
+    const communityCount = repo.community_count || repo.communities || repo.stats?.community_count || 0;
     headerEl.innerHTML = `
       <div class="graph-detail-name">${li('network',16)} ${esc(repo.name || repo.id)}</div>
-      <div class="graph-detail-meta">${esc(repo.description || '')}${nodeCount ? ` · ${t('graphs_nodes', nodeCount)}` : ''}${edgeCount ? ` · ${t('graphs_edges', edgeCount)}` : ''}</div>`;
+      <div class="graph-detail-meta">${esc(repo.description || '')}${nodeCount ? ` · ${t('graphs_nodes', nodeCount)}` : ''}${edgeCount ? ` · ${t('graphs_edges', edgeCount)}` : ''}${communityCount ? ` · ${t('graphs_communities', communityCount)}` : ''}</div>`;
   }
 
   const resultsEl = $('graphResults');
@@ -1620,9 +1648,104 @@ async function selectGraphRepo(repo) {
   _graphSelectedNodeId = null;
   _graphLegendFilter = null;
   _graphVisualization = repo.visualization || null;
-  _renderGraphVisualization(_graphVisualization);
-  _renderGraphTopNodes(repo.top_nodes || repo.stats?.top_nodes || [], _graphVisualization);
   _renderGraphSuggestions(repo.suggested_questions || repo.suggestions || []);
+  _renderGraphTopNodes(repo.top_nodes || repo.stats?.top_nodes || [], _graphVisualization);
+  _graphMode = 'overview';
+  _setGraphModeButtons();
+  await _loadGraphOverview(repoId);
+}
+
+function setGraphMode(mode) {
+  _graphMode = mode;
+  _setGraphModeButtons();
+  if (!_graphSelectedRepo) return;
+  const repoId = _graphSelectedRepo.id || _graphSelectedRepo.path || _graphSelectedRepo.name;
+  if (mode === 'overview') {
+    void _loadGraphOverview(repoId);
+  } else if (mode === 'focus') {
+    const focusNode = _graphSelectedNodeId || _graphWorkspaceData?.focus?.node_id || _graphSelectedRepo?.top_nodes?.[0]?.id;
+    if (focusNode) void _loadGraphNeighborhood(repoId, focusNode, 1);
+  } else if (mode === 'explore') {
+    void expandSelectedGraphNode();
+  }
+}
+
+function _setGraphModeButtons() {
+  document.querySelectorAll('.graph-mode-tab').forEach(button => {
+    button.classList.toggle('active', button.dataset.mode === _graphMode);
+  });
+}
+
+async function _loadGraphOverview(repoId) {
+  const data = await api(`/api/graphs/overview?repo=${encodeURIComponent(repoId)}`);
+  _applyGraphWorkspaceData(data);
+}
+
+async function _loadGraphNeighborhood(repoId, nodeId, depth = 1) {
+  const data = await api(`/api/graphs/neighborhood?repo=${encodeURIComponent(repoId)}&node=${encodeURIComponent(nodeId)}&depth=${depth}`);
+  _applyGraphWorkspaceData(data);
+}
+
+async function expandSelectedGraphNode() {
+  if (!_graphSelectedRepo) return;
+  const repoId = _graphSelectedRepo.id || _graphSelectedRepo.path || _graphSelectedRepo.name;
+  const seedNode = _graphSelectedNodeId || _graphWorkspaceData?.focus?.node_id || _graphSelectedRepo?.top_nodes?.[0]?.id;
+  if (!seedNode) return;
+  _graphMode = 'explore';
+  _setGraphModeButtons();
+  const data = await api('/api/graphs/expand', {
+    method: 'POST',
+    body: JSON.stringify({ repo: repoId, seed_nodes: [seedNode], depth: 2 }),
+  });
+  _applyGraphWorkspaceData(data);
+}
+
+async function searchGraphNodes(query) {
+  if (!_graphSelectedRepo) return;
+  const inspector = $('graphWorkspaceInspector');
+  const repoId = _graphSelectedRepo.id || _graphSelectedRepo.path || _graphSelectedRepo.name;
+  const trimmed = (query || '').trim();
+  if (!trimmed) {
+    _syncGraphWorkspaceMeta();
+    _renderGraphInspector();
+    return;
+  }
+  const data = await api(`/api/graphs/search?repo=${encodeURIComponent(repoId)}&q=${encodeURIComponent(query)}`);
+  const results = data.results || [];
+  if (inspector) {
+    inspector.innerHTML = `<div class="graph-section-title">Search results</div>${results.map(item => `<button class="graph-node-item" type="button" data-node-id="${esc(item.id)}"><span class="graph-node-name">${esc(item.label)}</span><span class="graph-node-score">${esc(String(item.degree || 0))}</span></button>`).join('') || `<div class="graph-empty">No matching nodes.</div>`}`;
+    inspector.querySelectorAll('[data-node-id]').forEach(btn => {
+      btn.onclick = () => {
+        $('graphSearchInput').value = btn.textContent.trim();
+        _graphMode = 'focus';
+        _setGraphModeButtons();
+        void _loadGraphNeighborhood(repoId, btn.dataset.nodeId, 1);
+      };
+    });
+  }
+}
+
+async function loadGraphPathBetweenTopNodes() {
+  if (!_graphSelectedRepo) return;
+  const repoId = _graphSelectedRepo.id || _graphSelectedRepo.path || _graphSelectedRepo.name;
+  const top = (_graphSelectedRepo.top_nodes || []).slice(0, 2);
+  const fromId = _graphSelectedNodeId || top[0]?.id;
+  const toId = top.find(node => node.id !== fromId)?.id || top[1]?.id;
+  if (!fromId || !toId) return;
+  const data = await api(`/api/graphs/path?repo=${encodeURIComponent(repoId)}&from=${encodeURIComponent(fromId)}&to=${encodeURIComponent(toId)}`);
+  _graphMode = 'focus';
+  _setGraphModeButtons();
+  _applyGraphWorkspaceData(data);
+}
+
+function resetGraphWorkspaceView() {
+  if (!_graphSelectedRepo) return;
+  const repoId = _graphSelectedRepo.id || _graphSelectedRepo.path || _graphSelectedRepo.name;
+  _graphSelectedNodeId = null;
+  _graphLegendFilter = null;
+  _graphMode = 'overview';
+  _setGraphModeButtons();
+  void _loadGraphOverview(repoId);
 }
 
 function _buildGraphTheme(communities) {
@@ -1661,7 +1784,7 @@ function _buildGraphNeighborhood(payload) {
 }
 
 function _communityLabelById(communityId) {
-  const communities = _graphVisualization?.communities || [];
+  const communities = _graphWorkspaceData?.visualization?.communities || _graphVisualization?.communities || [];
   return communities.find(c => c.id === communityId)?.label || `Community ${communityId}`;
 }
 
@@ -1676,120 +1799,110 @@ function _renderGraphLegend(communities, theme) {
     chip.innerHTML = `<span class="graph-legend-swatch" style="background:${esc(theme.communityColors.get(community.id) || theme.accent)}"></span><span>${esc(community.label)} · ${esc(String(community.count))}</span>`;
     chip.onclick = () => {
       _graphLegendFilter = _graphLegendFilter === community.id ? null : community.id;
-      _renderGraphVisualization(_graphVisualization);
+      _renderGraphVisualization(_graphWorkspaceData?.visualization || _graphVisualization);
     };
     legendEl.appendChild(chip);
   }
 }
 
-function _renderGraphVisualization(payload) {
-  const canvasEl = $('graphCanvas');
-  const inspectorEl = $('graphInspector');
-  if (!canvasEl || !inspectorEl) return;
-  if (_graphNetwork && typeof _graphNetwork.destroy === 'function') {
-    _graphNetwork.destroy();
-    _graphNetwork = null;
-  }
-  canvasEl.innerHTML = '';
-  inspectorEl.innerHTML = 'Select a node to inspect its neighborhood.';
-
-  if (!payload || !(payload.nodes || []).length) {
-    canvasEl.innerHTML = `<div class="graph-empty">${li('network', 32)}<div>${esc(t('graphs_no_results'))}</div></div>`;
-    const legendEl = $('graphLegend');
-    if (legendEl) legendEl.innerHTML = '';
-    return;
-  }
-
-  _buildGraphNeighborhood(payload);
-  const theme = _buildGraphTheme(payload.communities || []);
-  _renderGraphLegend(payload.communities || [], theme);
-
-  if (!window.vis || !window.vis.Network) {
-    canvasEl.innerHTML = `<div class="graph-empty">${li('network', 32)}<div>Interactive graph library failed to load.</div></div>`;
-    return;
-  }
-
+function _buildVisDataset(payload, theme) {
   const allowedNodes = new Set(
     (payload.nodes || [])
       .filter(node => _graphLegendFilter == null || node.community === _graphLegendFilter)
       .map(node => node.id)
   );
-
-  const nodes = (payload.nodes || [])
-    .filter(node => allowedNodes.has(node.id))
-    .map(node => ({
-      id: node.id,
-      label: node.label,
-      value: node.size || Math.max(10, 10 + (node.degree || 0)),
-      font: { color: theme.text, face: 'Inter, system-ui, sans-serif', size: 13, strokeWidth: 0 },
-      borderWidth: _graphSelectedNodeId === node.id ? 3 : 1.5,
-      color: {
-        background: theme.communityColors.get(node.community) || theme.accent,
-        border: _graphSelectedNodeId === node.id ? theme.accentText : theme.border,
-        highlight: {
-          background: theme.communityColors.get(node.community) || theme.accent,
-          border: theme.accentText,
-        },
-        hover: {
-          background: theme.communityColors.get(node.community) || theme.accent,
-          border: theme.accentText,
-        },
-      },
-      shape: 'dot',
-      title: `${node.label}
+  const nodes = (payload.nodes || []).filter(node => allowedNodes.has(node.id)).map(node => ({
+    id: node.id,
+    label: node.label,
+    value: node.size || Math.max(10, 10 + (node.degree || 0)),
+    font: { color: theme.text, face: 'Inter, system-ui, sans-serif', size: 13, strokeWidth: 0 },
+    borderWidth: _graphSelectedNodeId === node.id ? 3 : 1.5,
+    color: {
+      background: theme.communityColors.get(node.community) || theme.accent,
+      border: _graphSelectedNodeId === node.id ? theme.accentText : theme.border,
+      highlight: { background: theme.communityColors.get(node.community) || theme.accent, border: theme.accentText },
+      hover: { background: theme.communityColors.get(node.community) || theme.accent, border: theme.accentText },
+    },
+    shape: 'dot',
+    title: `${node.label}
 ${_communityLabelById(node.community)}
 Degree ${node.degree || 0}`,
-    }));
+  }));
+  const edges = (payload.edges || []).filter(edge => allowedNodes.has(edge.from) && allowedNodes.has(edge.to)).map(edge => ({
+    id: edge.id,
+    from: edge.from,
+    to: edge.to,
+    label: edge.label || '',
+    dashes: !!edge.highlighted,
+    color: { color: edge.highlighted ? theme.accent : theme.edge, highlight: theme.accent, opacity: edge.highlighted ? 0.95 : 0.55 },
+    selectionWidth: 2.5,
+    width: edge.highlighted ? 2.3 : 1,
+    smooth: { type: 'dynamic', roundness: 0.45 },
+    font: { color: theme.muted, size: 10, strokeWidth: 0, align: 'middle' },
+  }));
+  return { nodes, edges };
+}
 
-  const edges = (payload.edges || [])
-    .filter(edge => allowedNodes.has(edge.from) && allowedNodes.has(edge.to))
-    .map(edge => ({
-      id: edge.id,
-      from: edge.from,
-      to: edge.to,
-      label: edge.label || '',
-      color: { color: theme.edge, highlight: theme.accent, opacity: 0.55 },
-      selectionWidth: 2.5,
-      width: 1,
-      smooth: { type: 'dynamic', roundness: 0.45 },
-      font: { color: theme.muted, size: 10, strokeWidth: 0, align: 'middle' },
-    }));
-
-  _graphNetwork = new window.vis.Network(
+function _mountGraphNetwork(targetId, payload, networkSlot) {
+  const canvasEl = $(targetId);
+  if (!canvasEl) return null;
+  if (networkSlot.value && typeof networkSlot.value.destroy === 'function') {
+    networkSlot.value.destroy();
+    networkSlot.value = null;
+  }
+  canvasEl.innerHTML = '';
+  if (!payload || !(payload.nodes || []).length) {
+    canvasEl.innerHTML = `<div class="graph-empty">${li('network', 32)}<div>${esc(t('graphs_no_results'))}</div></div>`;
+    return null;
+  }
+  if (!window.vis || !window.vis.Network) {
+    canvasEl.innerHTML = `<div class="graph-empty">${li('network', 32)}<div>Interactive graph library failed to load.</div></div>`;
+    return null;
+  }
+  const theme = _buildGraphTheme(payload.communities || []);
+  const { nodes, edges } = _buildVisDataset(payload, theme);
+  const instance = new window.vis.Network(
     canvasEl,
     { nodes: new window.vis.DataSet(nodes), edges: new window.vis.DataSet(edges) },
     {
       autoResize: true,
       interaction: { hover: true, multiselect: false, navigationButtons: false, keyboard: true },
-      layout: { improvedLayout: true },
-      physics: {
-        stabilization: { iterations: 120, fit: true },
-        barnesHut: { gravitationalConstant: -5000, springLength: 120, springConstant: 0.028, damping: 0.72 },
-      },
-      nodes: { scaling: { min: 10, max: 34 } },
+      layout: { improvedLayout: false },
+      physics: { stabilization: { iterations: 120, fit: true }, barnesHut: { gravitationalConstant: -4200, springLength: targetId === 'graphMainCanvas' ? 150 : 120, springConstant: 0.028, damping: 0.72 } },
+      nodes: { scaling: { min: 10, max: targetId === 'graphMainCanvas' ? 42 : 34 } },
       edges: payload.directed ? { arrows: { to: { enabled: true, scaleFactor: 0.5 } } } : {},
     }
   );
-
-  _graphNetwork.on('click', params => {
+  instance.on('click', params => {
     const nodeId = params.nodes?.[0];
-    if (nodeId) _applyGraphSelection(nodeId, { focus: true });
-    else {
-      _graphSelectedNodeId = null;
-      _syncGraphNodeListSelection();
-      inspectorEl.innerHTML = 'Select a node to inspect its neighborhood.';
-    }
+    if (nodeId) _applyGraphSelection(nodeId, { focus: targetId === 'graphMainCanvas' });
   });
+  instance.on('hoverNode', () => { canvasEl.style.cursor = 'pointer'; });
+  instance.on('blurNode', () => { canvasEl.style.cursor = ''; });
+  networkSlot.value = instance;
+  return instance;
+}
 
-  _graphNetwork.on('hoverNode', () => { canvasEl.style.cursor = 'pointer'; });
-  _graphNetwork.on('blurNode', () => { canvasEl.style.cursor = ''; });
-
-  if (_graphSelectedNodeId && allowedNodes.has(_graphSelectedNodeId)) {
-    setTimeout(() => _applyGraphSelection(_graphSelectedNodeId, { focus: false }), 30);
-  } else {
-    const seedNode = nodes[0]?.id;
-    if (seedNode) setTimeout(() => _applyGraphSelection(seedNode, { focus: false }), 60);
+function _renderGraphVisualization(payload) {
+  const inspectorEl = $('graphInspector');
+  if (inspectorEl) inspectorEl.innerHTML = 'Select a node to inspect its neighborhood.';
+  if (!payload || !(payload.nodes || []).length) {
+    _renderGraphLegend([], _buildGraphTheme([]));
+    _mountGraphNetwork('graphCanvas', payload, { value: _graphNetwork });
+    _mountGraphNetwork('graphMainCanvas', payload, { value: _graphMainNetwork });
+    return;
   }
+  _buildGraphNeighborhood(payload);
+  const theme = _buildGraphTheme(payload.communities || []);
+  _renderGraphLegend(payload.communities || [], theme);
+  const sidebarSlot = { value: _graphNetwork };
+  const mainSlot = { value: _graphMainNetwork };
+  _mountGraphNetwork('graphCanvas', payload, sidebarSlot);
+  _mountGraphNetwork('graphMainCanvas', payload, mainSlot);
+  _graphNetwork = sidebarSlot.value;
+  _graphMainNetwork = mainSlot.value;
+  const seedNode = _graphSelectedNodeId || payload.nodes[0]?.id;
+  if (seedNode) setTimeout(() => _applyGraphSelection(seedNode, { focus: false }), 80);
 }
 
 function _syncGraphNodeListSelection() {
@@ -1798,43 +1911,67 @@ function _syncGraphNodeListSelection() {
   });
 }
 
+function _renderGraphInspector() {
+  const inspectorEl = $('graphWorkspaceInspector');
+  const sidebarInspector = $('graphInspector');
+  const node = _graphSelectedNodeId ? _graphNodeIndex.get(_graphSelectedNodeId) : null;
+  const neighbors = node ? [...(_graphAdjacency.get(_graphSelectedNodeId) || [])].map(id => _graphNodeIndex.get(id)).filter(Boolean).sort((a,b)=>(b.degree||0)-(a.degree||0)).slice(0,8) : [];
+  const html = node ? `
+    <div class="graph-inspector-title"><span>${esc(node.label)}</span><span style="color:var(--muted);font-size:11px">${esc(_communityLabelById(node.community))}</span></div>
+    <div class="graph-inspector-meta"><span>Degree ${esc(String(node.degree || 0))}</span><span>${esc(node.file_type || 'node')}</span><span>${esc(node.summary || node.title || node.label)}</span></div>
+    <div class="graph-inspector-neighbors">${neighbors.length ? neighbors.map(neighbor => `<button type="button" data-graph-focus="${esc(neighbor.id)}">${esc(neighbor.label)}</button>`).join('') : '<span style="color:var(--muted)">No direct neighbors.</span>'}</div>
+  ` : '<div class="graph-empty">Select a node to inspect its neighborhood.</div>';
+  if (inspectorEl) {
+    inspectorEl.innerHTML = html;
+    inspectorEl.querySelectorAll('[data-graph-focus]').forEach(btn => btn.onclick = () => _applyGraphSelection(btn.dataset.graphFocus, { focus: true }));
+  }
+  if (sidebarInspector) sidebarInspector.innerHTML = node ? `${esc(node.label)} · ${esc(_communityLabelById(node.community))} · Degree ${esc(String(node.degree || 0))}` : 'Select a node to inspect its neighborhood.';
+}
+
 function _applyGraphSelection(nodeId, opts = {}) {
-  if (!_graphVisualization) return;
-  const inspectorEl = $('graphInspector');
   const node = _graphNodeIndex.get(nodeId);
-  if (!node || !inspectorEl) return;
+  if (!node) return;
   _graphSelectedNodeId = nodeId;
   _syncGraphNodeListSelection();
-  const neighbors = [...(_graphAdjacency.get(nodeId) || [])]
-    .map(id => _graphNodeIndex.get(id))
-    .filter(Boolean)
-    .sort((a, b) => (b.degree || 0) - (a.degree || 0))
-    .slice(0, 8);
-
-  inspectorEl.innerHTML = `
-    <div class="graph-inspector-title">
-      <span>${esc(node.label)}</span>
-      <span style="color:var(--muted);font-size:11px">${esc(_communityLabelById(node.community))}</span>
-    </div>
-    <div class="graph-inspector-meta">
-      <span>Degree ${esc(String(node.degree || 0))}</span>
-      <span>${esc(node.file_type || 'node')}</span>
-      <span>${esc(node.title || node.label)}</span>
-    </div>
-    <div class="graph-inspector-neighbors">
-      ${neighbors.length ? neighbors.map(neighbor => `<button type="button" data-graph-focus="${esc(neighbor.id)}">${esc(neighbor.label)}</button>`).join('') : '<span style="color:var(--muted)">No direct neighbors.</span>'}
-    </div>`;
-
-  inspectorEl.querySelectorAll('[data-graph-focus]').forEach(btn => {
-    btn.onclick = () => _applyGraphSelection(btn.dataset.graphFocus, { focus: true });
-  });
-
+  _renderGraphInspector();
+  _syncGraphWorkspaceMeta();
   if (_graphNetwork) {
     _graphNetwork.selectNodes([nodeId]);
-    if (opts.focus !== false) {
-      _graphNetwork.focus(nodeId, { scale: 1.08, animation: { duration: 350, easingFunction: 'easeInOutQuad' } });
-    }
+    if (opts.focus) _graphNetwork.focus(nodeId, { scale: 1.12, animation: { duration: 350, easingFunction: 'easeInOutQuad' } });
   }
+  if (_graphMainNetwork) {
+    _graphMainNetwork.selectNodes([nodeId]);
+    _graphMainNetwork.focus(nodeId, { scale: 1.08, animation: { duration: 350, easingFunction: 'easeInOutQuad' } });
+  }
+}
+
+function _syncGraphWorkspaceMeta() {
+  const meta = $('graphWorkspaceMeta');
+  const summary = $('graphMainSummary');
+  const breadcrumbs = $('graphBreadcrumbs');
+  const payload = _graphWorkspaceData?.visualization || _graphVisualization;
+  const visibleNodes = (payload?.nodes || []).length;
+  const visibleEdges = (payload?.edges || []).length;
+  if (meta) meta.textContent = _graphSelectedNodeId ? `Focused on ${_graphNodeIndex.get(_graphSelectedNodeId)?.label || _graphSelectedNodeId} · ${visibleNodes} visible nodes · ${visibleEdges} edges` : `Mode: ${_graphMode} · ${visibleNodes} visible nodes · ${visibleEdges} edges`;
+  if (summary) summary.textContent = _graphSelectedRepo ? `${_graphSelectedRepo.name || _graphSelectedRepo.id} · ${_graphMode}` : 'Knowledge graph explorer';
+  if (breadcrumbs) {
+    if (_graphWorkspaceData?.focus?.path?.length) breadcrumbs.textContent = _graphWorkspaceData.focus.path.join(' → ');
+    else if (_graphSelectedNodeId) breadcrumbs.textContent = _graphNodeIndex.get(_graphSelectedNodeId)?.label || _graphSelectedNodeId;
+    else breadcrumbs.textContent = '';
+  }
+  _setGraphTopbar();
+}
+
+function _applyGraphWorkspaceData(data) {
+  _graphWorkspaceData = data;
+  _graphVisualization = data.visualization || data;
+  if (data.mode) _graphMode = data.mode === 'path' ? 'focus' : data.mode;
+  if (data.focus?.node_id) _graphSelectedNodeId = data.focus.node_id;
+  else if (!_graphSelectedNodeId && _graphVisualization?.nodes?.[0]?.id) _graphSelectedNodeId = _graphVisualization.nodes[0].id;
+  _setGraphModeButtons();
+  _renderGraphVisualization(_graphVisualization);
+  _renderGraphInspector();
+  _syncGraphWorkspaceMeta();
 }
 
 function _renderGraphTopNodes(nodes, visualization) {
@@ -1853,7 +1990,7 @@ function _renderGraphTopNodes(nodes, visualization) {
     item.type = 'button';
     item.className = 'graph-node-item';
     const nodeId = node.id || node.label || node.name;
-    if (visualNodeIds.has(nodeId)) item.dataset.graphNodeId = nodeId;
+    if (visualNodeIds.has(nodeId) || nodeId) item.dataset.graphNodeId = nodeId;
     const scoreValue = node.score != null ? node.score : (node.edges != null ? node.edges : null);
     const score = scoreValue != null ? String(scoreValue) : '';
     item.innerHTML = `
@@ -1862,7 +1999,11 @@ function _renderGraphTopNodes(nodes, visualization) {
       ${node.type ? `<span class="graph-node-type">${esc(node.type)}</span>` : ''}
       ${score ? `<span class="graph-node-score">${esc(score)}</span>` : ''}`;
     item.onclick = () => {
-      if (nodeId) _applyGraphSelection(nodeId, { focus: true });
+      if (!nodeId || !_graphSelectedRepo) return;
+      _graphMode = 'focus';
+      _setGraphModeButtons();
+      const repoId = _graphSelectedRepo.id || _graphSelectedRepo.path || _graphSelectedRepo.name;
+      void _loadGraphNeighborhood(repoId, nodeId, 1);
     };
     listEl.appendChild(item);
   }
@@ -1890,18 +2031,24 @@ function _renderGraphSuggestions(questions) {
 
 function graphBackToList() {
   _graphSelectedRepo = null;
+  _graphWorkspaceData = null;
   _graphSelectedNodeId = null;
   _graphLegendFilter = null;
-  if (_graphNetwork && typeof _graphNetwork.destroy === 'function') {
-    _graphNetwork.destroy();
-    _graphNetwork = null;
-  }
   const listEl = $('graphRepoList');
   const detailEl = $('graphDetail');
   const backBtn = $('graphBackBtn');
+  if (_graphNetwork && typeof _graphNetwork.destroy === 'function') _graphNetwork.destroy();
+  if (_graphMainNetwork && typeof _graphMainNetwork.destroy === 'function') _graphMainNetwork.destroy();
+  _graphNetwork = null;
+  _graphMainNetwork = null;
   if (listEl) listEl.style.display = '';
   if (detailEl) detailEl.style.display = 'none';
   if (backBtn) backBtn.style.display = 'none';
+  const workspace = $('graphWorkspace');
+  if (workspace) workspace.style.display = 'flex';
+  const mainCanvas = $('graphMainCanvas');
+  if (mainCanvas) mainCanvas.innerHTML = `<div class="graph-empty">${li('network',32)}<div>Pick a repository to start exploring.</div></div>`;
+  _setGraphTopbar();
   if (_graphsData) _renderGraphRepoList(_graphsData);
 }
 

@@ -170,7 +170,7 @@ class TestGetGraphDetail:
     """Test get_graph_detail."""
 
     def test_detail_returns_report_text(self, tmp_path: pathlib.Path):
-        from api.graphs import get_graph_detail
+        from api.graphs import get_graph_detail, get_graph_overview, get_graph_neighborhood
 
         repo = tmp_path / "detail-repo"
         gdir = repo / "graphify-out"
@@ -180,11 +180,13 @@ class TestGetGraphDetail:
             "multigraph": False,
             "graph": {},
             "nodes": [
-                {"label": "x", "id": "x", "community": 0, "degree": 2, "file_type": "code"},
-                {"label": "y", "id": "y", "community": 1, "degree": 1, "file_type": "note"},
+                {"label": "x", "id": "x", "community": 0, "degree": 3, "file_type": "code", "summary": "entry point"},
+                {"label": "y", "id": "y", "community": 1, "degree": 2, "file_type": "note"},
+                {"label": "z", "id": "z", "community": 1, "degree": 1, "file_type": "code"},
             ],
             "links": [
                 {"source": "x", "target": "y", "relation": "connects", "confidence": "EXTRACTED"},
+                {"source": "y", "target": "z", "relation": "references", "confidence": "INFERRED"},
             ],
             "hyperedges": [],
         }
@@ -195,10 +197,19 @@ class TestGetGraphDetail:
         assert detail is not None
         assert detail["name"] == "detail-repo"
         assert detail["report_text"] == "# Test Report\nSome content here."
-        assert detail["stats"]["node_count"] == 2
+        assert detail["stats"]["node_count"] == 3
         assert detail["visualization"]["nodes"][0]["id"] == "x"
         assert detail["visualization"]["edges"][0]["from"] == "x"
-        assert detail["visualization"]["communities"][0]["id"] == 0
+        assert detail["visualization"]["communities"][0]["id"] == 1
+
+        overview = get_graph_overview(str(repo))
+        assert overview["mode"] == "overview"
+        assert overview["focus"]["node_id"] == "x"
+        assert len(overview["visualization"]["nodes"]) <= 3
+
+        neighborhood = get_graph_neighborhood(str(repo), "y", depth=1)
+        assert neighborhood["focus"]["node_id"] == "y"
+        assert {node["id"] for node in neighborhood["visualization"]["nodes"]} == {"x", "y", "z"}
 
     def test_detail_missing_repo(self, tmp_path: pathlib.Path):
         from api.graphs import get_graph_detail
@@ -222,6 +233,44 @@ class TestRunGraphifyCommand:
         result = run_graphify_command(str(tmp_path), "query", ["hello"])
         assert result["ok"] is False
         assert "not found" in result["error"].lower() or "No graph.json" in result["error"]
+
+
+class TestGraphSlices:
+    def test_search_expand_and_path_use_graph_slices(self, tmp_path: pathlib.Path):
+        from api.graphs import expand_graph_neighborhood, find_graph_path, search_graph_nodes
+
+        repo = tmp_path / "slice-repo"
+        gdir = repo / "graphify-out"
+        gdir.mkdir(parents=True)
+        graph_data = {
+            "directed": False,
+            "multigraph": False,
+            "graph": {},
+            "nodes": [
+                {"label": "alpha.py", "id": "alpha", "community": 0, "degree": 2, "file_type": "code"},
+                {"label": "beta.py", "id": "beta", "community": 0, "degree": 2, "file_type": "code"},
+                {"label": "gamma.py", "id": "gamma", "community": 1, "degree": 2, "file_type": "code"},
+                {"label": "delta.py", "id": "delta", "community": 1, "degree": 1, "file_type": "note"},
+            ],
+            "links": [
+                {"source": "alpha", "target": "beta", "relation": "uses", "confidence": "EXTRACTED"},
+                {"source": "beta", "target": "gamma", "relation": "calls", "confidence": "EXTRACTED"},
+                {"source": "gamma", "target": "delta", "relation": "links", "confidence": "INFERRED"},
+            ],
+            "hyperedges": [],
+        }
+        (gdir / "graph.json").write_text(json.dumps(graph_data))
+
+        search = search_graph_nodes(str(repo), "ga")
+        assert search[0]["id"] == "gamma"
+
+        expanded = expand_graph_neighborhood(str(repo), ["beta"], depth=1)
+        assert expanded["focus"]["seed_nodes"] == ["beta"]
+        assert {node["id"] for node in expanded["visualization"]["nodes"]} == {"alpha", "beta", "gamma"}
+
+        path = find_graph_path(str(repo), "alpha", "delta")
+        assert path["focus"]["path"] == ["alpha", "beta", "gamma", "delta"]
+        assert len(path["visualization"]["edges"]) == 3
 
 
 # ── Integration tests via HTTP ───────────────────────────────────────────────
@@ -255,6 +304,42 @@ class TestGraphsAPIEndpoints:
             data = json.loads(e.read())
         assert status == 404
 
+    def test_graphs_overview_requires_repo(self, cleanup_test_sessions):
+        try:
+            data, status = get("/api/graphs/overview")
+        except urllib.error.HTTPError as e:
+            status = e.code
+            data = json.loads(e.read())
+        assert status == 400
+        assert "error" in data
+
+    def test_graphs_neighborhood_requires_node(self, cleanup_test_sessions):
+        try:
+            data, status = get("/api/graphs/neighborhood?repo=/tmp/example")
+        except urllib.error.HTTPError as e:
+            status = e.code
+            data = json.loads(e.read())
+        assert status == 400
+        assert "error" in data
+
+    def test_graphs_path_requires_endpoints(self, cleanup_test_sessions):
+        try:
+            data, status = get("/api/graphs/path?repo=/tmp/example")
+        except urllib.error.HTTPError as e:
+            status = e.code
+            data = json.loads(e.read())
+        assert status == 400
+        assert "error" in data
+
+    def test_graphs_search_requires_query(self, cleanup_test_sessions):
+        try:
+            data, status = get("/api/graphs/search?repo=/tmp/example")
+        except urllib.error.HTTPError as e:
+            status = e.code
+            data = json.loads(e.read())
+        assert status == 400
+        assert "error" in data
+
     def test_graphs_query_requires_repo(self, cleanup_test_sessions):
         """POST /api/graphs/query without repo returns 400."""
         data, status = post("/api/graphs/query", {"question": "hello"})
@@ -265,6 +350,11 @@ class TestGraphsAPIEndpoints:
         """POST /api/graphs/query with repo but no question returns 400."""
         data, status = post("/api/graphs/query", {"repo": "/tmp/fake"})
         assert status == 400
+
+    def test_graphs_expand_requires_seed_nodes(self, cleanup_test_sessions):
+        data, status = post("/api/graphs/expand", {"repo": "/tmp/fake"})
+        assert status == 400
+        assert "error" in data
 
     def test_graphs_query_path_requires_from_to(self, cleanup_test_sessions):
         """POST /api/graphs/query with command=path needs from/to."""

@@ -225,6 +225,36 @@
         <button class="chip workspace-toggle-btn" id="btnWorkspacePanelToggle" onclick="toggleWorkspacePanel()" title="Show workspace panel" aria-pressed="false"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg><span class="workspace-toggle-label">Files</span></button>
       </div>
     </div>
+    <div class="graph-workspace" id="graphWorkspace" style="display:none">
+      <div class="graph-app-shell">
+        <div class="graph-sidebar-stack">
+          <div class="graph-mode-tabs" id="graphModeTabs">
+            <button class="graph-mode-tab active" data-mode="overview" onclick="setGraphMode('overview')">Overview</button>
+            <button class="graph-mode-tab" data-mode="focus" onclick="setGraphMode('focus')">Focus</button>
+            <button class="graph-mode-tab" data-mode="explore" onclick="setGraphMode('explore')">Explore</button>
+          </div>
+          <div class="graph-workspace-search">
+            <input id="graphSearchInput" type="search" placeholder="Search nodes..." oninput="searchGraphNodes(this.value)">
+          </div>
+          <div class="graph-workspace-actions">
+            <button class="graph-action-btn" id="graphExpandBtn" onclick="expandSelectedGraphNode()">Expand</button>
+            <button class="graph-action-btn" id="graphPathBtn" onclick="loadGraphPathBetweenTopNodes()">Path</button>
+            <button class="graph-action-btn" onclick="resetGraphWorkspaceView()">Reset</button>
+          </div>
+          <div class="graph-workspace-meta" id="graphWorkspaceMeta">Select a graph to explore.</div>
+          <div class="graph-workspace-inspector" id="graphWorkspaceInspector"></div>
+        </div>
+        <div class="graph-workspace-main">
+          <div class="graph-main-toolbar">
+            <div class="graph-main-summary" id="graphMainSummary">Knowledge graph explorer</div>
+            <div class="graph-main-breadcrumbs" id="graphBreadcrumbs"></div>
+          </div>
+          <div class="graph-main-canvas-shell">
+            <div class="graph-main-canvas" id="graphMainCanvas"></div>
+          </div>
+        </div>
+      </div>
+    </div>
     <div class="messages" id="messages">
       <div class="empty-state" id="emptyState">
         <div class="empty-logo"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="80" height="80" aria-label="Hermes caduceus">
