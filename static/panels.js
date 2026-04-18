@@ -1586,7 +1586,14 @@ function _renderGraphRepoList(repos) {
 }
 
 async function selectGraphRepo(repo) {
-  _graphSelectedRepo = repo;
+  const repoId = repo.id || repo.path || repo.name;
+  try {
+    const detail = await api(`/api/graphs/detail?repo=${encodeURIComponent(repoId)}`);
+    _graphSelectedRepo = detail || repo;
+  } catch (_e) {
+    _graphSelectedRepo = repo;
+  }
+  repo = _graphSelectedRepo;
   const listEl = $('graphRepoList');
   const detailEl = $('graphDetail');
   const backBtn = $('graphBackBtn');
@@ -1624,7 +1631,8 @@ function _renderGraphTopNodes(nodes) {
     const node = topFive[i];
     const item = document.createElement('div');
     item.className = 'graph-node-item';
-    const score = node.score != null ? parseFloat(node.score).toFixed(2) : '';
+    const scoreValue = node.score != null ? node.score : (node.edges != null ? node.edges : null);
+    const score = scoreValue != null ? String(scoreValue) : '';
     item.innerHTML = `
       <span class="graph-node-rank">${i + 1}</span>
       <span class="graph-node-name">${esc(node.name || node.label || node.id)}</span>

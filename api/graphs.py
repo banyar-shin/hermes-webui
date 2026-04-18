@@ -92,13 +92,31 @@ def _build_index_entry(
         graph_data = _read_graph_json_stats(graph_json_path)
         report_meta = _parse_report_header(graphify_dir / _GRAPH_REPORT)
 
+        relative_repo = None
+        try:
+            relative_repo = str(repo_dir.relative_to(_SEARCH_ROOT))
+        except Exception:
+            relative_repo = repo_dir.name
+
+        top_nodes = graph_data.get("top_nodes", [])
+        suggested_questions = report_meta.get("suggested_questions", [])
+        summary_line = report_meta.get("summary_line")
+
         return {
             "id": str(repo_dir),
+            "repo": relative_repo,
             "name": repo_dir.name,
             "path": str(repo_dir),
             "graphify_dir": str(graphify_dir),
             "graph_json_size": stat.st_size,
             "graph_mtime": stat.st_mtime,
+            "updated_at": stat.st_mtime,
+            "description": summary_line or relative_repo,
+            "node_count": graph_data.get("node_count", 0),
+            "edge_count": graph_data.get("edge_count", 0),
+            "community_count": graph_data.get("community_count", 0),
+            "top_nodes": top_nodes,
+            "suggested_questions": suggested_questions,
             "stats": graph_data,
             "report": report_meta,
             "has_html": (graphify_dir / "graph.html").is_file(),
@@ -341,7 +359,9 @@ def run_graphify_command(
 
         return {
             "ok": True,
+            "answer": output,
             "output": output,
+            "sources": [],
             "command": command,
             "args": args,
         }

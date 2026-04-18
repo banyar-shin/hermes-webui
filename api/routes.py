@@ -1337,11 +1337,12 @@ def handle_post(handler, parsed) -> bool:
         from api.graphs import run_graphify_command
 
         try:
-            require(body, "repo")
+            repo = body.get("repo") or body.get("repository")
+            if not repo:
+                raise ValueError('"repo" field required')
         except ValueError as e:
             return bad(handler, str(e))
-        repo = body["repo"]
-        question = body.get("question", "")
+        question = body.get("question") or body.get("query") or ""
         command = body.get("command", "query")
         # For path command, expect "from" and "to" node names
         if command == "path":
