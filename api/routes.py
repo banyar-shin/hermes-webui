@@ -746,6 +746,24 @@ def handle_get(handler, parsed) -> bool:
             {"name": get_active_profile_name(), "path": str(get_active_hermes_home())},
         )
 
+    # ── Graphs API (GET) ──
+    if parsed.path == "/api/graphs":
+        from api.graphs import discover_graph_repos
+
+        return j(handler, {"repos": discover_graph_repos()})
+
+    if parsed.path == "/api/graphs/detail":
+        from api.graphs import get_graph_detail
+
+        qs = parse_qs(parsed.query)
+        repo_path = qs.get("repo", [""])[0]
+        if not repo_path:
+            return bad(handler, "repo query parameter required")
+        detail = get_graph_detail(repo_path)
+        if detail is None:
+            return bad(handler, "Repo not found or has no graphify-out", 404)
+        return j(handler, detail)
+
     return False  # 404
 
 
@@ -1313,6 +1331,47 @@ def handle_post(handler, parsed) -> bool:
         handler.end_headers()
         handler.wfile.write(json.dumps({"ok": True}).encode())
         return True
+
+    # ── Graphs API (POST) ──
+    if parsed.path == "/api/graphs/query":
+        from api.graphs import run_graphify_command
+
+        try:
+            require(body, "repo")
+        except ValueError as e:
+            return bad(handler, str(e))
+        repo = body["repo"]
+        question = body.get("question", "")
+        command = body.get("command", "query")
+        # For path command, expect "from" and "to" node names
+        if command == "path":
+            node_from = body.get("from", "")
+            node_to = body.get("to", "")
+            if not node_from or not node_to:
+                return bad(handler, '"from" and "to" fields required for path command')
+            args = [node_from, node_to]
+        elif command == "explain":
+            node = body.get("node", "") or question
+            if not node:
+                return bad(handler, '"node" or "question" field required for explain command')
+            args = [node]
+        elif command == "query":
+            if not question:
+                return bad(handler, '"question" field required for query command')
+            args = [question]
+        else:
+            # Unknown command — pass through; run_graphify_command validates
+            args = [question] if question else []
+
+        result = run_graphify_command(
+            repo,
+            command,
+            args,
+            budget=body.get("budget"),
+            dfs=body.get("dfs", False),
+        )
+        status = 200 if result.get("ok") else 400
+        return j(handler, result, status=status)
 
     if parsed.path == "/api/auth/logout":
         from api.auth import clear_auth_cookie, invalidate_session, parse_cookie
