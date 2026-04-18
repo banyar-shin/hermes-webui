@@ -16,6 +16,7 @@ async function switchPanel(name) {
   if (name === 'workspaces') await loadWorkspacesPanel();
   if (name === 'profiles') await loadProfilesPanel();
   if (name === 'todos') loadTodos();
+  if (name === 'graphs') await loadGraphs();
 }
 
 // ── Cron panel ──
@@ -1531,5 +1532,191 @@ function dismissErrorBanner(){
   const banner=$('bgErrorBanner');
   if(banner) banner.style.display='none';
 }
+
+// ── Graphs panel ────────────────────────────────────────────────────────────
+let _graphsData = null;
+let _graphSelectedRepo = null;
+
+async function loadGraphs() {
+  const listEl = $('graphRepoList');
+  const detailEl = $('graphDetail');
+  const backBtn = $('graphBackBtn');
+  if (!listEl) return;
+  // If a repo is selected, stay on detail view
+  if (_graphSelectedRepo) return;
+  if (detailEl) detailEl.style.display = 'none';
+  if (backBtn) backBtn.style.display = 'none';
+  listEl.style.display = '';
+  try {
+    const data = await api('/api/graphs');
+    _graphsData = data.repositories || data.repos || [];
+    _renderGraphRepoList(_graphsData);
+  } catch (e) {
+    listEl.innerHTML = `<div class="graph-empty">${li('network',32)}<div>${esc(t('graphs_no_repos'))}</div><div style="margin-top:4px;font-size:11px">${esc(t('graphs_no_repos_hint'))}</div></div>`;
+  }
+}
+
+function _renderGraphRepoList(repos) {
+  const listEl = $('graphRepoList');
+  if (!listEl) return;
+  listEl.innerHTML = '';
+  if (!repos.length) {
+    listEl.innerHTML = `<div class="graph-empty">${li('network',32)}<div>${esc(t('graphs_no_repos'))}</div><div style="margin-top:4px;font-size:11px">${esc(t('graphs_no_repos_hint'))}</div></div>`;
+    return;
+  }
+  for (const repo of repos) {
+    const card = document.createElement('div');
+    card.className = 'graph-repo-card';
+    const nodeCount = repo.node_count || repo.nodes || 0;
+    const edgeCount = repo.edge_count || repo.edges || 0;
+    const communityCount = repo.community_count || repo.communities || 0;
+    const updatedAt = repo.updated_at ? new Date(repo.updated_at).toLocaleDateString() : '';
+    card.innerHTML = `
+      <div class="graph-card-title">${li('network',14)} ${esc(repo.name || repo.id)}</div>
+      ${repo.description ? `<div class="graph-card-meta">${esc(repo.description)}</div>` : ''}
+      <div class="graph-card-stats">
+        ${nodeCount ? `<span class="graph-card-stat">${esc(t('graphs_nodes', nodeCount))}</span>` : ''}
+        ${edgeCount ? `<span class="graph-card-stat">${esc(t('graphs_edges', edgeCount))}</span>` : ''}
+        ${communityCount ? `<span class="graph-card-stat">${esc(t('graphs_communities', communityCount))}</span>` : ''}
+      </div>
+      ${updatedAt ? `<div class="graph-card-meta" style="margin-top:6px">${li('clock',10)} ${esc(t('graphs_last_updated'))}: ${esc(updatedAt)}</div>` : ''}`;
+    card.onclick = () => selectGraphRepo(repo);
+    listEl.appendChild(card);
+  }
+}
+
+async function selectGraphRepo(repo) {
+  _graphSelectedRepo = repo;
+  const listEl = $('graphRepoList');
+  const detailEl = $('graphDetail');
+  const backBtn = $('graphBackBtn');
+  if (listEl) listEl.style.display = 'none';
+  if (detailEl) detailEl.style.display = '';
+  if (backBtn) backBtn.style.display = '';
+  // Render header
+  const headerEl = $('graphDetailHeader');
+  if (headerEl) {
+    const nodeCount = repo.node_count || repo.nodes || 0;
+    const edgeCount = repo.edge_count || repo.edges || 0;
+    headerEl.innerHTML = `
+      <div class="graph-detail-name">${li('network',16)} ${esc(repo.name || repo.id)}</div>
+      <div class="graph-detail-meta">${esc(repo.description || '')}${nodeCount ? ` \u00b7 ${t('graphs_nodes', nodeCount)}` : ''}${edgeCount ? ` \u00b7 ${t('graphs_edges', edgeCount)}` : ''}</div>`;
+  }
+  // Clear previous results
+  const resultsEl = $('graphResults');
+  if (resultsEl) resultsEl.innerHTML = '';
+  // Load top nodes
+  _renderGraphTopNodes(repo.top_nodes || []);
+  // Load suggested questions
+  _renderGraphSuggestions(repo.suggested_questions || repo.suggestions || []);
+}
+
+function _renderGraphTopNodes(nodes) {
+  const listEl = $('graphNodeList');
+  if (!listEl) return;
+  listEl.innerHTML = '';
+  const topFive = nodes.slice(0, 5);
+  if (!topFive.length) {
+    listEl.innerHTML = `<div style="padding:6px 0;font-size:11px;color:var(--muted)">${esc(t('graphs_no_results'))}</div>`;
+    return;
+  }
+  for (let i = 0; i < topFive.length; i++) {
+    const node = topFive[i];
+    const item = document.createElement('div');
+    item.className = 'graph-node-item';
+    const score = node.score != null ? parseFloat(node.score).toFixed(2) : '';
+    item.innerHTML = `
+      <span class="graph-node-rank">${i + 1}</span>
+      <span class="graph-node-name">${esc(node.name || node.label || node.id)}</span>
+      ${node.type ? `<span class="graph-node-type">${esc(node.type)}</span>` : ''}
+      ${score ? `<span class="graph-node-score">${esc(score)}</span>` : ''}`;
+    listEl.appendChild(item);
+  }
+}
+
+function _renderGraphSuggestions(questions) {
+  const tray = $('graphChipTray');
+  if (!tray) return;
+  tray.innerHTML = '';
+  if (!questions.length) return;
+  for (const q of questions) {
+    const chip = document.createElement('button');
+    chip.className = 'graph-chip';
+    chip.textContent = typeof q === 'string' ? q : (q.text || q.question || '');
+    chip.title = chip.textContent;
+    chip.onclick = () => {
+      const input = $('graphQueryInput');
+      if (input) { input.value = chip.textContent; input.focus(); }
+      submitGraphQuery();
+    };
+    tray.appendChild(chip);
+  }
+}
+
+function graphBackToList() {
+  _graphSelectedRepo = null;
+  const listEl = $('graphRepoList');
+  const detailEl = $('graphDetail');
+  const backBtn = $('graphBackBtn');
+  if (listEl) listEl.style.display = '';
+  if (detailEl) detailEl.style.display = 'none';
+  if (backBtn) backBtn.style.display = 'none';
+  if (_graphsData) _renderGraphRepoList(_graphsData);
+}
+
+async function submitGraphQuery() {
+  const input = $('graphQueryInput');
+  const resultsEl = $('graphResults');
+  const sendBtn = $('graphSendBtn');
+  if (!input || !resultsEl || !_graphSelectedRepo) return;
+  const query = input.value.trim();
+  if (!query) return;
+  // Show loading
+  const loadingEl = document.createElement('div');
+  loadingEl.className = 'graph-result-loading';
+  loadingEl.innerHTML = `<span class="graph-spinner"></span> ${esc(t('graphs_querying'))}`;
+  resultsEl.prepend(loadingEl);
+  if (sendBtn) sendBtn.disabled = true;
+  input.value = '';
+  try {
+    const repoId = _graphSelectedRepo.id || _graphSelectedRepo.name;
+    const data = await api('/api/graphs/query', {
+      method: 'POST',
+      body: JSON.stringify({ repository: repoId, query })
+    });
+    loadingEl.remove();
+    const card = document.createElement('div');
+    card.className = 'graph-result-card';
+    const answer = data.answer || data.response || data.result || t('graphs_no_results');
+    const sources = data.sources || data.context || [];
+    card.innerHTML = `
+      <div class="graph-result-q">${esc(query)}</div>
+      <div class="graph-result-a">${typeof renderMd === 'function' ? renderMd(answer) : esc(answer)}</div>
+      ${sources.length ? `<div class="graph-result-sources">${esc(t('graphs_sources'))}: ${sources.map(s => esc(typeof s === 'string' ? s : (s.name || s.id || ''))).join(', ')}</div>` : ''}`;
+    resultsEl.prepend(card);
+  } catch (e) {
+    loadingEl.remove();
+    const errCard = document.createElement('div');
+    errCard.className = 'graph-result-card';
+    errCard.style.borderColor = 'var(--error)';
+    errCard.innerHTML = `<div class="graph-result-q">${esc(query)}</div><div style="color:var(--error);font-size:11px">${esc(t('graphs_error'))}${esc(e.message)}</div>`;
+    resultsEl.prepend(errCard);
+  } finally {
+    if (sendBtn) sendBtn.disabled = false;
+  }
+}
+
+// Submit on Enter in graph query input
+(function(){
+  const setup = () => {
+    const input = $('graphQueryInput');
+    if (!input) return;
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitGraphQuery(); }
+    });
+  };
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', setup);
+  else setTimeout(setup, 0);
+})();
 
 // Event wiring
