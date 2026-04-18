@@ -230,6 +230,19 @@ class TestQuietHTTPServer(unittest.TestCase):
             "QuietHTTPServer.handle_error must delegate to super for real errors",
         )
 
+    def test_log_request_guards_missing_request_attrs(self):
+        """log_request must tolerate parse_request failures before command/path are set."""
+        self.assertIn(
+            "getattr(self, 'command', '-') or '-'",
+            SERVER_PY,
+            "server.py: log_request must guard missing command during malformed requests",
+        )
+        self.assertIn(
+            "getattr(self, 'path', '-') or '-'",
+            SERVER_PY,
+            "server.py: log_request must guard missing path during malformed requests",
+        )
+
 
 # ── Session title redaction in /api/sessions ────────────────────────────────
 
