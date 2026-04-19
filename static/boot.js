@@ -588,15 +588,17 @@ const _SKINS=[
   {name:'Poseidon', colors:['#0EA5E9','#0284C7','#0369A1']},
   {name:'Sisyphus', colors:['#A78BFA','#8B5CF6','#7C3AED']},
   {name:'Charizard',colors:['#FB923C','#F97316','#EA580C']},
+  {name:'Gruvbox Material',key:'gruvbox-material',colors:['#D8A657','#A9B665','#7DAEA3']},
 ];
 const _VALID_THEMES=new Set(['system','dark','light']);
-const _VALID_SKINS=new Set((_SKINS||[]).map(s=>s.name.toLowerCase()));
+const _VALID_SKINS=new Set((_SKINS||[]).map(s=>(s.key||s.name.toLowerCase())));
 const _LEGACY_THEME_MAP={
   slate:{theme:'dark',skin:'slate'},
   solarized:{theme:'dark',skin:'poseidon'},
   monokai:{theme:'dark',skin:'sisyphus'},
   nord:{theme:'dark',skin:'slate'},
   oled:{theme:'dark',skin:'default'},
+  'gruvbox-material':{theme:'dark',skin:'gruvbox-material'},
 };
 let _systemThemeMq=null;
 let _onSystemThemeChange=null;
@@ -695,13 +697,13 @@ function _buildSkinPicker(activeSkin){
   if(!grid) return;
   grid.innerHTML='';
   for(const skin of _SKINS){
-    const key=skin.name.toLowerCase();
+    const key=(skin.key||skin.name.toLowerCase());
     const btn=document.createElement('button');
     btn.type='button';
     btn.className='skin-pick-btn';
     btn.dataset.skinVal=key;
     btn.style.cssText='border:1px solid var(--border2);border-radius:8px;padding:8px 4px;text-align:center;cursor:pointer;background:none;transition:all .15s';
-    btn.onclick=()=>_pickSkin(skin.name);
+    btn.onclick=()=>_pickSkin(key);
     const dots=skin.colors.map(c=>`<span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${c}"></span>`).join('');
     btn.innerHTML=`<div style="display:flex;gap:3px;justify-content:center;margin-bottom:4px">${dots}</div><span style="font-size:11px;color:var(--text)">${skin.name}</span>`;
     grid.appendChild(btn);

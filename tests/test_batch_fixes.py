@@ -178,6 +178,24 @@ class TestSystemTheme:
             "cmdTheme must accept legacy theme aliases and map them onto canonical appearance values"
         )
 
+    def test_gruvbox_material_is_registered_as_skin(self):
+        src = read("static/boot.js")
+        assert "Gruvbox Material" in src, (
+            "Skin picker must expose Gruvbox Material as a first-class supported skin"
+        )
+        assert "gruvbox-material" in src, (
+            "Appearance normalization must recognize gruvbox-material as a valid persisted skin key"
+        )
+
+    def test_gruvbox_material_css_tokens_exist(self):
+        src = read("static/style.css")
+        assert ':root[data-skin="gruvbox-material"]' in src, (
+            "style.css must define light-mode tokens for the gruvbox-material skin"
+        )
+        assert ':root.dark[data-skin="gruvbox-material"]' in src, (
+            "style.css must define dark-mode tokens for the gruvbox-material skin"
+        )
+
     def test_panels_reverts_via_apply_theme(self):
         src = read("static/panels.js")
         assert "_applyTheme(_settingsThemeOnOpen)" in src or \

@@ -1254,6 +1254,7 @@ _SETTINGS_SKIN_VALUES = {
     "poseidon",
     "sisyphus",
     "charizard",
+    "gruvbox-material",
 }
 _SETTINGS_LEGACY_THEME_MAP = {
     # Legacy full themes now map onto the closest supported theme + accent skin pair.
@@ -1262,6 +1263,7 @@ _SETTINGS_LEGACY_THEME_MAP = {
     "monokai": ("dark", "sisyphus"),
     "nord": ("dark", "slate"),
     "oled": ("dark", "default"),
+    "gruvbox-material": ("dark", "gruvbox-material"),
 }
 
 

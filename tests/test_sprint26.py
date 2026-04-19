@@ -116,6 +116,28 @@ def test_settings_legacy_monokai_maps_to_sisyphus_skin():
         post("/api/settings", {"theme": "dark", "skin": "default"})
 
 
+def test_settings_legacy_gruvbox_material_maps_to_gruvbox_material_skin():
+    """Gruvbox Material should survive the theme migration as a first-class skin."""
+    try:
+        d, status = post("/api/settings", {"theme": "gruvbox-material"})
+        assert status == 200
+        d2, _ = get("/api/settings")
+        assert d2.get("theme") == "dark"
+        assert d2.get("skin") == "gruvbox-material"
+    finally:
+        post("/api/settings", {"theme": "dark", "skin": "default"})
+
+
+def test_settings_set_skin_gruvbox_material():
+    """Gruvbox Material should be accepted as a supported skin."""
+    try:
+        post("/api/settings", {"skin": "gruvbox-material"})
+        d, _ = get("/api/settings")
+        assert d.get("skin") == "gruvbox-material"
+    finally:
+        post("/api/settings", {"skin": "default"})
+
+
 def test_settings_unknown_theme_falls_back_to_dark_default():
     """Unknown themes should normalize to a safe canonical appearance."""
     try:
